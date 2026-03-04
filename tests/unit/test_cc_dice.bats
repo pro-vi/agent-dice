@@ -340,6 +340,48 @@ deploy_transcript() {
     assert_output "false"
 }
 
+@test "findTriggerValue: exact mode returns target when present" {
+    run bun -e "
+        import { findTriggerValue } from '$PROJ_DIR/src/roll';
+        console.log(findTriggerValue([5, 16, 20], 16, 'exact'));
+        console.log(findTriggerValue([5, 10, 15], 16, 'exact'));
+    "
+    assert_success
+    assert_line --index 0 "16"
+    assert_line --index 1 "undefined"
+}
+
+@test "findTriggerValue: gte mode returns minimum qualifying roll" {
+    run bun -e "
+        import { findTriggerValue } from '$PROJ_DIR/src/roll';
+        console.log(findTriggerValue([5, 15, 20], 15, 'gte'));
+        console.log(findTriggerValue([5, 10, 14], 15, 'gte'));
+    "
+    assert_success
+    assert_line --index 0 "15"
+    assert_line --index 1 "undefined"
+}
+
+@test "findTriggerValue: lte mode returns maximum qualifying roll" {
+    run bun -e "
+        import { findTriggerValue } from '$PROJ_DIR/src/roll';
+        console.log(findTriggerValue([2, 5, 15], 5, 'lte'));
+        console.log(findTriggerValue([6, 10, 15], 5, 'lte'));
+    "
+    assert_success
+    assert_line --index 0 "5"
+    assert_line --index 1 "undefined"
+}
+
+@test "findTriggerValue: empty rolls returns undefined" {
+    run bun -e "
+        import { findTriggerValue } from '$PROJ_DIR/src/roll';
+        console.log(findTriggerValue([], 20, 'exact'));
+    "
+    assert_success
+    assert_output "undefined"
+}
+
 @test "probability: 1d20 exact 20 is 5%" {
     run bun -e "
         import { calculateProbability } from '$PROJ_DIR/src/roll';
@@ -1117,6 +1159,85 @@ EOF
     assert_output --partial "PASS"
 }
 
+
+@test "shared pool: triggerValue matches target, not best" {
+    # Two single d20 slots: one targets exact 1, one targets exact 20
+    # The one that triggers should have triggerValue equal to its target
+    bun "$CLI" register tv-low --die 20 --target 1 --type single --cooldown none --message "Low"
+    bun "$CLI" register tv-high --die 20 --target 20 --type single --cooldown none --message "High"
+
+    run bun -e "
+        process.env.CC_DICE_BASE = '$CC_DICE_BASE';
+        process.env.CC_DICE_SESSION_ID = '$TEST_SESSION_ID';
+        const { checkAllSlots } = await import('$PROJ_DIR/src/index');
+        // Run enough iterations to see both trigger at least once
+        let lowSeen = false, highSeen = false;
+        for (let i = 0; i < 500; i++) {
+            const results = await checkAllSlots({ sessionId: '$TEST_SESSION_ID' });
+            const low = results.find(r => r.slotName === 'tv-low');
+            const high = results.find(r => r.slotName === 'tv-high');
+            if (low.triggered) {
+                if (low.triggerValue !== 1) {
+                    console.log('FAIL: low triggerValue should be 1, got ' + low.triggerValue);
+                    process.exit(1);
+                }
+                lowSeen = true;
+            }
+            if (high.triggered) {
+                if (high.triggerValue !== 20) {
+                    console.log('FAIL: high triggerValue should be 20, got ' + high.triggerValue);
+                    process.exit(1);
+                }
+                highSeen = true;
+            }
+            // Non-triggered slots should have undefined triggerValue
+            if (!low.triggered && low.triggerValue !== undefined) {
+                console.log('FAIL: non-triggered low should have undefined triggerValue');
+                process.exit(1);
+            }
+            if (!high.triggered && high.triggerValue !== undefined) {
+                console.log('FAIL: non-triggered high should have undefined triggerValue');
+                process.exit(1);
+            }
+            if (lowSeen && highSeen) break;
+        }
+        if (!lowSeen || !highSeen) {
+            console.log('WARN: not both triggered in 500 iterations, but no incorrect values seen');
+        }
+        console.log('PASS: triggerValue matches target when triggered');
+    "
+    assert_success
+    assert_output --partial "PASS"
+}
+
+@test "shared pool: triggerValue with gte mode returns minimum qualifying" {
+    bun "$CLI" register tv-gte --die 20 --target 15 --target-mode gte --type single --cooldown none --message "GTE"
+
+    run bun -e "
+        process.env.CC_DICE_BASE = '$CC_DICE_BASE';
+        process.env.CC_DICE_SESSION_ID = '$TEST_SESSION_ID';
+        const { checkAllSlots } = await import('$PROJ_DIR/src/index');
+        for (let i = 0; i < 200; i++) {
+            const results = await checkAllSlots({ sessionId: '$TEST_SESSION_ID' });
+            const r = results.find(r => r.slotName === 'tv-gte');
+            if (r.triggered) {
+                // triggerValue should be the roll itself (single die) and >= target
+                if (r.triggerValue < 15 || r.triggerValue > 20) {
+                    console.log('FAIL: triggerValue ' + r.triggerValue + ' out of range [15,20]');
+                    process.exit(1);
+                }
+                // triggerValue should equal the roll (single die = 1 roll)
+                if (r.triggerValue !== r.rolls[0]) {
+                    console.log('FAIL: triggerValue ' + r.triggerValue + ' != roll ' + r.rolls[0]);
+                    process.exit(1);
+                }
+            }
+        }
+        console.log('PASS: gte triggerValue always in valid range');
+    "
+    assert_success
+    assert_output --partial "PASS"
+}
 
 @test "shared pool: base roll consistency over 200 iterations" {
     bun "$CLI" register cons-a --die 20 --target 1 --target-mode gte --type single --cooldown none --message "A"

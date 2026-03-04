@@ -46,6 +46,37 @@ export function checkTarget(
 }
 
 /**
+ * Find the specific roll value that matched the target.
+ *
+ * For 'exact': the target value itself (if present).
+ * For 'gte': the minimum qualifying roll (closest to the threshold).
+ * For 'lte': the maximum qualifying roll (closest to the threshold).
+ *
+ * Returns undefined if no roll matches.
+ */
+export function findTriggerValue(
+  rolls: number[],
+  target: number,
+  mode: "exact" | "gte" | "lte"
+): number | undefined {
+  if (rolls.length === 0) return undefined;
+  switch (mode) {
+    case "exact":
+      return rolls.includes(target) ? target : undefined;
+    case "gte": {
+      const qualifying = rolls.filter((r) => r >= target);
+      return qualifying.length > 0 ? Math.min(...qualifying) : undefined;
+    }
+    case "lte": {
+      const qualifying = rolls.filter((r) => r <= target);
+      return qualifying.length > 0 ? Math.max(...qualifying) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Calculate the probability of triggering as a percentage (0-100).
  *
  * For 'exact' mode with 1 target value:

@@ -46,6 +46,7 @@ export interface DiceResult {
   triggered: boolean;
   rolls: number[];
   best: number;
+  triggerValue?: number;                 // the specific roll that matched the target
   diceCount: number;
   probability: number;                   // chance as 0-100
   slotName: string;

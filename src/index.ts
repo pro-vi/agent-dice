@@ -23,7 +23,7 @@ export { loadState, saveState, resetState, clearState } from "./state";
 export { hasCooldown, markTriggered, clearCooldown } from "./cooldown";
 
 // Roll
-export { rollDice, checkTarget, calculateProbability } from "./roll";
+export { rollDice, checkTarget, findTriggerValue, calculateProbability } from "./roll";
 
 // Transcript
 export { getTranscriptPath, countExchanges } from "./transcript";
@@ -45,7 +45,7 @@ import type { DiceSlotConfig, CheckContext, DiceResult, SlotStatus } from "./typ
 import { getSlot, listSlots as listSlotsInternal } from "./registry";
 import { loadState, resetState as resetStateInternal, clearState as clearStateInternal } from "./state";
 import { hasCooldown, markTriggered as markTriggeredInternal, clearCooldown } from "./cooldown";
-import { rollDice, checkTarget, calculateProbability } from "./roll";
+import { rollDice, checkTarget, findTriggerValue, calculateProbability } from "./roll";
 import { countExchanges } from "./transcript";
 import { extractSessionFromPath, getSessionId } from "./session";
 import { getAccumulatorDiceCount } from "./accumulator";
@@ -201,6 +201,7 @@ export async function checkAllSlots(ctx: CheckContext = {}): Promise<DiceResult[
 
       const best = Math.max(...rolls);
       const triggered = checkTarget(rolls, config.target, config.targetMode);
+      const triggerValue = triggered ? findTriggerValue(rolls, config.target, config.targetMode) : undefined;
       const probability = calculateProbability(diceCount, dieSize, config.target, config.targetMode);
 
       if (triggered) {
@@ -216,7 +217,7 @@ export async function checkAllSlots(ctx: CheckContext = {}): Promise<DiceResult[
         }
       }
 
-      results.push({ triggered, rolls, best, diceCount, probability, slotName: config.name });
+      results.push({ triggered, rolls, best, triggerValue, diceCount, probability, slotName: config.name });
     }
   }
 
