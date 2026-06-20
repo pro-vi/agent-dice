@@ -16,6 +16,21 @@ function emptyResult(slotName: string): DiceResult {
   return { triggered: false, rolls: [], best: 0, diceCount: 0, probability: 0, slotName };
 }
 
+/**
+ * Pure single-slot dry-run preview: rolls `diceCount` dice with NO shared pool and
+ * NO side effects (no reset, no cooldown). Used by `cc-dice roll` so the CLI shares
+ * the engine's roll/trigger math instead of re-implementing it (D8).
+ */
+export function previewSlot(config: DiceSlotConfig, diceCount: number, rng?: () => number): DiceResult {
+  if (diceCount <= 0) return emptyResult(config.name);
+  const rolls = rollDice(diceCount, config.die, rng);
+  const best = Math.max(...rolls);
+  const triggered = checkTarget(rolls, config.target, config.targetMode);
+  const triggerValue = triggered ? findTriggerValue(rolls, config.target, config.targetMode) : undefined;
+  const probability = calculateProbability(diceCount, config.die, config.target, config.targetMode);
+  return { triggered, rolls, best, triggerValue, diceCount, probability, slotName: config.name };
+}
+
 /** Dice count for any slot type. Accumulator persists sentinel calibration via the host. */
 async function getDiceCount(
   host: DiceHost,
