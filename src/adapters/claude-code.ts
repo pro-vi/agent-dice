@@ -46,15 +46,27 @@ export function resolveSessionId(ctx: CheckContext): string {
 /**
  * Resolve a Claude CheckContext into the engine's CoreCheckContext.
  *
- * `currentDepth` stays `undefined` when there is no transcript — the engine then
+ * Session id is resolved eagerly; depth is resolved LAZILY and memoized — the
+ * transcript is parsed at most once, and only if the engine actually asks (an
+ * active accumulator slot, a status/reset on an accumulator). Cheap no-op Stop
+ * paths (empty registry, all slots cooled, single/fixed-only) never parse it.
+ *
+ * Depth resolves to `undefined` when there is no transcript — the engine then
  * applies the correct per-operation default (0 for accumulator reads / trigger
  * reset, -1 sentinel for manual resetSlot). Do NOT coerce to 0 here (D7).
  */
-export async function resolveCoreContext(ctx: CheckContext): Promise<CoreCheckContext> {
+export function resolveCoreContext(ctx: CheckContext): CoreCheckContext {
   const sessionId = resolveSessionId(ctx);
-  let currentDepth: number | undefined;
-  if (ctx.transcriptPath) {
-    currentDepth = await countExchanges(ctx.transcriptPath);
-  }
-  return { sessionId, currentDepth };
+  let resolved = false;
+  let depth: number | undefined;
+  return {
+    sessionId,
+    async getCurrentDepth() {
+      if (!resolved) {
+        depth = ctx.transcriptPath ? await countExchanges(ctx.transcriptPath) : undefined;
+        resolved = true;
+      }
+      return depth;
+    },
+  };
 }

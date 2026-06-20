@@ -4,8 +4,13 @@
  * suite. Reused by core-engine.conformance.ts across U2/U3/U4.
  */
 
-import type { DiceHost } from "../../src/core/contracts";
+import type { CoreCheckContext, DiceHost } from "../../src/core/contracts";
 import type { DiceSlotConfig, DiceState } from "../../src/types";
+
+/** Build a CoreCheckContext with an eager (already-known) depth, for tests. */
+export function coreCtx(sessionId: string, depth?: number): CoreCheckContext {
+  return { sessionId, getCurrentDepth: async () => depth };
+}
 
 /** Deterministic, seedable PRNG (mulberry32) returning a float in [0, 1). */
 export function makeRng(seed: number): () => number {

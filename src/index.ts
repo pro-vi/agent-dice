@@ -61,12 +61,12 @@ import * as engine from "./core/engine";
  * base roll; single slots observe only the base, accumulator/fixed add bonus dice.
  */
 export async function checkAllSlots(ctx: CheckContext = {}): Promise<DiceResult[]> {
-  return engine.checkAllSlots(createClaudeHost(), await resolveCoreContext(ctx));
+  return engine.checkAllSlots(createClaudeHost(), resolveCoreContext(ctx));
 }
 
 /** Get status for a slot without rolling. */
 export async function getSlotStatus(name: string, ctx: CheckContext = {}): Promise<SlotStatus | null> {
-  return engine.getSlotStatus(createClaudeHost(), name, await resolveCoreContext(ctx));
+  return engine.getSlotStatus(createClaudeHost(), name, resolveCoreContext(ctx));
 }
 
 /**
@@ -74,15 +74,15 @@ export async function getSlotStatus(name: string, ctx: CheckContext = {}): Promi
  * If no transcript is available, uses sentinel -1.
  */
 export async function resetSlot(name: string, ctx: CheckContext = {}): Promise<void> {
-  return engine.resetSlot(createClaudeHost(), name, await resolveCoreContext(ctx));
+  return engine.resetSlot(createClaudeHost(), name, resolveCoreContext(ctx));
 }
 
 /** Clear a slot's state completely (depth = 0, remove cooldown). */
 export async function clearSlot(name: string, ctx: CheckContext = {}): Promise<void> {
-  return engine.clearSlot(createClaudeHost(), name, await resolveCoreContext(ctx));
+  return engine.clearSlot(createClaudeHost(), name, resolveCoreContext(ctx));
 }
 
 /** Session start: clear all slots with clearOnSessionStart=true. */
 export async function sessionStart(ctx: CheckContext = {}): Promise<string[]> {
-  return engine.sessionStart(createClaudeHost(), await resolveCoreContext(ctx));
+  return engine.sessionStart(createClaudeHost(), resolveCoreContext(ctx));
 }

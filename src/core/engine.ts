@@ -39,7 +39,7 @@ async function getDiceCount(
 ): Promise<{ diceCount: number; currentDepth: number; depthSinceTrigger: number }> {
   switch (config.type) {
     case "accumulator": {
-      const depth = ctx.currentDepth ?? 0; // accumulator reads default to 0 without depth
+      const depth = (await ctx.getCurrentDepth()) ?? 0; // accumulator reads default to 0 without depth
       const state = await host.loadState(config.name, ctx.sessionId);
       const result = computeAccumulator(config, depth, state);
       if (result.calibratedState) {
@@ -114,7 +114,7 @@ export async function checkAllSlots(host: DiceHost, ctx: CoreCheckContext): Prom
 
       if (triggered) {
         if (config.resetOnTrigger && config.type === "accumulator") {
-          const depth = ctx.currentDepth ?? 0; // trigger-reset default 0 (D7: differs from resetSlot's -1)
+          const depth = (await ctx.getCurrentDepth()) ?? 0; // trigger-reset default 0 (D7: differs from resetSlot's -1)
           await host.saveState(config.name, ctx.sessionId, {
             depth_at_last_trigger: depth,
             last_reset: new Date().toISOString(),
@@ -170,7 +170,7 @@ export async function resetSlot(host: DiceHost, name: string, ctx: CoreCheckCont
   const config = await host.getSlot(name);
   if (!config) return;
 
-  const depth = ctx.currentDepth ?? -1; // sentinel when no depth
+  const depth = (await ctx.getCurrentDepth()) ?? -1; // sentinel when no depth
   await host.saveState(name, ctx.sessionId, {
     depth_at_last_trigger: depth,
     last_reset: new Date().toISOString(),

@@ -11,13 +11,17 @@
 import type { DiceSlotConfig, DiceState } from "../types";
 
 /**
- * Context handed to the engine, already resolved by the adapter (plan D1).
- * The engine never resolves session id or depth itself.
- * `currentDepth` is `undefined` when the host has no depth source for this call.
+ * Context handed to the engine. Session id is resolved up front by the adapter
+ * (plan D1). Depth is resolved LAZILY: the engine calls `getCurrentDepth()` only
+ * on paths that actually need it (accumulator dice count / status / reset), so
+ * cheap no-op checks — empty registry, all-cooled-down, single/fixed-only,
+ * clearSlot, sessionStart — never parse the transcript. Adapters should memoize
+ * the resolver so multiple accumulator slots in one check parse at most once.
+ * Resolves to `undefined` when the host has no depth source.
  */
 export interface CoreCheckContext {
   sessionId: string;
-  currentDepth?: number;
+  getCurrentDepth(): Promise<number | undefined>;
 }
 
 /**
