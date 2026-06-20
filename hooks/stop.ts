@@ -23,7 +23,7 @@ try {
   mod = await import("../src/index");
 }
 
-const { listSlots, checkAllSlots, parseStopHookInput } = mod;
+const { listSlots, checkAllSlots, parseStopHookInput, renderTrigger } = mod;
 
 async function main() {
   try {
@@ -44,18 +44,7 @@ async function main() {
       if (!slot) continue;
 
       if (result.triggered) {
-        const diceStr = result.rolls.join(", ");
-        let msg = slot.onTrigger.message
-            .replace("{rolls}", diceStr)
-            .replace("{best}", String(result.best))
-            .replace("{diceCount}", String(result.diceCount))
-            .replace("{slotName}", result.slotName);
-
-        if (slot.flavor !== false) {
-          msg = `🎲 Nat ${result.best}! ${msg}`;
-        }
-
-        triggered.push(msg);
+        triggered.push(renderTrigger(result, slot));
       } else if (result.diceCount > 0) {
         // Log non-trigger rolls (visible to user only via stdout)
         console.log(

@@ -5,6 +5,7 @@
  */
 
 import type { DiceResult, DiceSlotConfig } from "./types";
+import { applyPlaceholders } from "./adapters/claude-renderer";
 
 interface StopHookInput {
   session_id: string;
@@ -38,15 +39,8 @@ export async function parseStopHookInput(): Promise<StopHookInput> {
  */
 export function exitWithResult(result: DiceResult, slotConfig: DiceSlotConfig): never {
   if (result.triggered) {
-    const diceStr = result.rolls.join(", ");
-    // Replace {rolls}, {best}, {diceCount} placeholders in message
-    const message = slotConfig.onTrigger.message
-      .replace("{rolls}", diceStr)
-      .replace("{best}", String(result.best))
-      .replace("{diceCount}", String(result.diceCount))
-      .replace("{slotName}", result.slotName);
-
-    console.error(message);
+    // No flavor prefix here — preserves exitWithResult's current output (U6).
+    console.error(applyPlaceholders(slotConfig.onTrigger.message, result));
     process.exit(2);
   }
 

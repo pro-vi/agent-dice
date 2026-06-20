@@ -44,6 +44,14 @@ export const checks: Check[] = [
     },
   },
   {
+    name: "U6: renderer + preview helpers are exported for hooks/CLI",
+    fn: () => {
+      for (const name of ["renderTrigger", "applyPlaceholders", "previewSlot"]) {
+        assert(typeof (api as Record<string, unknown>)[name] === "function", `missing export: ${name}`);
+      }
+    },
+  },
+  {
     name: "C10: package.json keeps name, bin.cc-dice, main",
     fn: async () => {
       const pkg = (await Bun.file(new URL("../../package.json", import.meta.url)).json()) as {

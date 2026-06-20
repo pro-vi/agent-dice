@@ -40,6 +40,9 @@ export { getAccumulatorDiceCount } from "./accumulator";
 // Single-slot dry-run preview (used by the CLI `roll` command)
 export { previewSlot } from "./core/engine";
 
+// Trigger rendering (used by the Stop hook via the dynamically imported module)
+export { renderTrigger, applyPlaceholders } from "./adapters/claude-renderer";
+
 // ============================================================================
 // High-level API
 //
