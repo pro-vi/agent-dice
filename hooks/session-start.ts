@@ -24,3 +24,6 @@ try {
 } catch {
   // Fail silently — don't block session start
 }
+
+// Mark this entry script as a module so top-level await type-checks (TS1375).
+export {};

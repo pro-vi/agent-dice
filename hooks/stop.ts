@@ -84,3 +84,6 @@ async function main() {
 }
 
 main();
+
+// Mark this entry script as a module so top-level await type-checks (TS1375).
+export {};
