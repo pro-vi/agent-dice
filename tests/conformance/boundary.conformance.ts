@@ -40,6 +40,17 @@ function listTs(dir: string): string[] {
   return out;
 }
 
+/**
+ * Strip comments so token rules (Bun, process.env) and import extraction match
+ * real code, not prose. This is the comment-side of the D4 false-positive fix:
+ * a doc-comment naming a forbidden token must not trip the check.
+ */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "") // block comments
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1"); // line comments (':' guard skips URLs)
+}
+
 function importSpecifiers(src: string): string[] {
   const specs: string[] = [];
   const re =
@@ -71,7 +82,7 @@ function findViolations(): string[] {
     const file = resolve(queue.shift()!);
     if (seen.has(file) || !existsSync(file)) continue;
     seen.add(file);
-    const src = readFileSync(file, "utf8");
+    const src = stripComments(readFileSync(file, "utf8"));
 
     // Token scan applies to files authored under src/core (their own surface).
     if (coreFiles.has(file)) {
