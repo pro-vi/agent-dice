@@ -242,7 +242,7 @@ cc-dice/
       test_cc_dice.bats     BATS test suite
     conformance/
       run.ts                Conformance runner (`bun run test` wraps it)
-      *.conformance.ts      Facade / storage / boundary / core-engine probes
+      *.conformance.ts      Facade / storage / boundary / core-engine / CLI / docs probes
 ```
 
 ---
