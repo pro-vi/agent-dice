@@ -10,12 +10,14 @@
  *
  * @param count - Number of dice to roll
  * @param dieSize - Number of sides on each die
+ * @param rng - RNG returning a float in [0,1); defaults to Math.random. Injected
+ *   by the core engine (via DiceHost.rng) for deterministic conformance tests (D2).
  * @returns Array of roll results (1 to dieSize inclusive)
  */
-export function rollDice(count: number, dieSize: number): number[] {
+export function rollDice(count: number, dieSize: number, rng: () => number = Math.random): number[] {
   if (count <= 0 || dieSize <= 0) return [];
   return Array.from({ length: count }, () =>
-    Math.floor(Math.random() * dieSize) + 1
+    Math.floor(rng() * dieSize) + 1
   );
 }
 

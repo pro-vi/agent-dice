@@ -25,6 +25,22 @@ try {
 
 const { listSlots, checkAllSlots, parseStopHookInput } = mod;
 
+// Local fallback renderer. The hook dynamically imports the *installed* module,
+// which may be version-skewed and predate the exported renderTrigger. Without a
+// fallback, calling an undefined renderTrigger would throw and fail-open (exit 0),
+// silently dropping a trigger AFTER its reset/cooldown side effects already ran
+// (review finding #2). Prefer the shared renderer when present; fall back otherwise.
+function localRenderTrigger(result: any, slot: any): string {
+  const msg = String(slot.onTrigger.message)
+    .replace("{rolls}", result.rolls.join(", "))
+    .replace("{best}", String(result.best))
+    .replace("{diceCount}", String(result.diceCount))
+    .replace("{slotName}", result.slotName);
+  return slot.flavor !== false ? `🎲 Nat ${result.best}! ${msg}` : msg;
+}
+const renderTrigger =
+  typeof (mod as any).renderTrigger === "function" ? (mod as any).renderTrigger : localRenderTrigger;
+
 async function main() {
   try {
     const input = await parseStopHookInput();
@@ -44,18 +60,7 @@ async function main() {
       if (!slot) continue;
 
       if (result.triggered) {
-        const diceStr = result.rolls.join(", ");
-        let msg = slot.onTrigger.message
-            .replace("{rolls}", diceStr)
-            .replace("{best}", String(result.best))
-            .replace("{diceCount}", String(result.diceCount))
-            .replace("{slotName}", result.slotName);
-
-        if (slot.flavor !== false) {
-          msg = `🎲 Nat ${result.best}! ${msg}`;
-        }
-
-        triggered.push(msg);
+        triggered.push(renderTrigger(result, slot));
       } else if (result.diceCount > 0) {
         // Log non-trigger rolls (visible to user only via stdout)
         console.log(
@@ -79,3 +84,6 @@ async function main() {
 }
 
 main();
+
+// Mark this entry script as a module so top-level await type-checks (TS1375).
+export {};

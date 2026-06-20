@@ -1,3 +1,5 @@
 node_modules/
 *.log
 .*
+# but DO track committed project config under .github (CI workflows, etc.)
+!.github/

@@ -169,13 +169,22 @@ import { registerSlot, checkAllSlots } from "./src/index";
 
 **State not clearing between sessions**: Ensure the SessionStart hook is registered. Use `cc-dice clear <name>` to reset a specific slot manually.
 
+## Architecture
+
+cc-dice is a thin Claude Code **facade over a reusable, host-agnostic dice core**.
+Scheduling (dice counts, shared rolls, cooldowns, sentinel calibration) lives in
+`src/core/`; everything Claude-specific (transcripts, sessions, file storage, hook
+output) lives in `src/adapters/`. The public API in `src/index.ts` is unchanged.
+A second host could implement the `DiceHost` contract to reuse the core — that's
+future work; the Claude Code adapter is the only one that ships today.
+
 ## Contributing
 
 ```bash
 git clone --recurse-submodules https://github.com/pro-vi/cc-dice.git
 cd cc-dice
 bun install
-bun test
+bun run test   # BATS suite + conformance probes (bare `bun test` won't run BATS)
 ```
 
 Test submodules (bats-core, bats-support, bats-assert) are required. If you cloned without `--recurse-submodules`:

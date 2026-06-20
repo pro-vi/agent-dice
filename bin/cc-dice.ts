@@ -27,9 +27,7 @@ import {
   getSlotStatus,
   resetSlot,
   clearSlot,
-  rollDice,
-  checkTarget,
-  calculateProbability,
+  previewSlot,
   getTranscriptPath,
 } from "../src/index";
 import type { CheckContext } from "../src/types";
@@ -201,11 +199,9 @@ async function main(): Promise<void> {
         console.log(`${name}: 0 dice (no roll)`);
         break;
       }
-      const rolls = rollDice(diceCount, config.die);
-      const best = rolls.length > 0 ? Math.max(...rolls) : 0;
-      const triggered = checkTarget(rolls, config.target, config.targetMode);
-      const probability = calculateProbability(diceCount, config.die, config.target, config.targetMode);
-      console.log(`${name}: ${diceCount}d${config.die} = [${rolls.join(", ")}] (best: ${best}, ${probability}%)${triggered ? " TRIGGERED!" : ""}`);
+      // Dry-run preview via the engine (no shared pool, no side effects) — D8.
+      const preview = previewSlot(config, diceCount);
+      console.log(`${name}: ${diceCount}d${config.die} = [${preview.rolls.join(", ")}] (best: ${preview.best}, ${preview.probability}%)${preview.triggered ? " TRIGGERED!" : ""}`);
       break;
     }
 
@@ -213,6 +209,10 @@ async function main(): Promise<void> {
       const name = args[1];
       if (!name) {
         console.error("Error: slot name required");
+        process.exit(1);
+      }
+      if (!(await getSlot(name))) {
+        console.error(`Slot not found: ${name}`);
         process.exit(1);
       }
       const ctx = buildContext();
@@ -225,6 +225,10 @@ async function main(): Promise<void> {
       const name = args[1];
       if (!name) {
         console.error("Error: slot name required");
+        process.exit(1);
+      }
+      if (!(await getSlot(name))) {
+        console.error(`Slot not found: ${name}`);
         process.exit(1);
       }
       const ctx = buildContext();

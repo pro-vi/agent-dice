@@ -14,6 +14,47 @@ The extraction (2026-02-14) produced a standalone package that any Claude Code t
 
 ---
 
+## Architecture: Core + Adapters
+
+cc-dice is the **Claude Code facade over a reusable dice core**. The scheduling
+logic is host-agnostic; everything Claude-specific (transcripts, session env vars,
+file storage, hook rendering) lives in an adapter behind a small contract.
+
+```
+bin/cc-dice.ts, hooks/stop.ts, hooks/session-start.ts
+        |
+        v
+src/index.ts                   public compatibility facade (unchanged API)
+        |
+        v
+src/adapters/claude-code.ts    builds a DiceHost from registry/state/cooldown and
+src/adapters/claude-renderer.ts   resolves session/depth; renders trigger output
+        |
+        v
+src/core/engine.ts             host-agnostic scheduler + state transitions
+  src/core/contracts.ts          DiceHost + CoreCheckContext (no Claude/Bun/fs)
+  src/core/accumulator.ts        pure depth→dice formula + sentinel calibration
+  src/roll.ts                    pure rolling (injectable RNG)
+```
+
+**The engine owns policy** — dice counts, sentinel calibration, shared-roll
+grouping, trigger detection, reset/cooldown-on-trigger, session-start clearing.
+**The host owns primitives** — list/get slots, load/save/clear state,
+check/mark/clear cooldown, and an optional RNG. The adapter resolves a Claude
+`CheckContext` (`{ transcriptPath?, sessionId? }`) into the engine's resolved
+`CoreCheckContext` (`{ sessionId, currentDepth? }`) before the engine runs — the
+engine never touches a transcript or a session env var.
+
+A boundary conformance test (C8) fails if anything under `src/core/**` imports a
+Claude/host module, a node builtin, `Bun`, or `process.env`.
+
+**Reusability:** a second host (e.g. Pi or another agent runtime) could implement
+`DiceHost` to reuse the engine without importing any Claude transcript/session
+helpers. That is **future work — no such adapter ships today**; cc-dice remains the
+Claude Code distribution and the only shipped adapter.
+
+---
+
 ## Slot System
 
 The core abstraction is a "dice slot" — a named configuration for probabilistic triggering:
@@ -168,11 +209,18 @@ cc-dice/
   install.sh                Installer (symlinks, hook registration)
 
   src/
-    index.ts                Public API + checkAllSlots
+    index.ts                Public API facade (delegates to core via adapter)
     types.ts                All interfaces
+    core/
+      contracts.ts          DiceHost + CoreCheckContext (host-agnostic; no Claude/Bun/fs)
+      engine.ts             Host-agnostic scheduler + state transitions
+      accumulator.ts        Pure depth→dice formula + sentinel calibration
+    adapters/
+      claude-code.ts        Builds DiceHost from file stores + resolves session/depth
+      claude-renderer.ts    Trigger-message rendering (placeholders + dice flavor)
     registry.ts             Slot CRUD + file persistence
-    roll.ts                 Pure rolling + target checking + probability
-    accumulator.ts          Depth-based dice count calculation
+    roll.ts                 Pure rolling (injectable RNG) + target checking + probability
+    accumulator.ts          Claude/file wrapper over core/accumulator
     state.ts                Per-slot per-session state persistence
     cooldown.ts             Per-session trigger markers
     transcript.ts           Claude Code JSONL parser (depth resolution)
@@ -192,6 +240,9 @@ cc-dice/
   tests/
     unit/
       test_cc_dice.bats     BATS test suite
+    conformance/
+      run.ts                Conformance runner (`bun run test` wraps it)
+      *.conformance.ts      Facade / storage / boundary / core-engine / CLI / docs probes
 ```
 
 ---
@@ -213,7 +264,12 @@ BATS (Bash Automated Testing System) with submodules for assertion helpers.
 All tests use temp directories via `CC_DICE_BASE` override — tests never touch `~/.claude/dice/`.
 
 ```bash
-bun test
+bun run test   # runs BATS + the conformance runner in one report
 # or
 ./tests/bats/bin/bats tests/unit/test_cc_dice.bats
 ```
+
+Note: bare `bun test` is Bun's *native* runner — it does **not** execute the
+`package.json` test script (BATS). The conformance suite is intentionally named
+`*.conformance.ts` (not `*.test.ts`) so the native runner ignores it; it runs only
+via `tests/conformance/run.ts`, which `bun run test` invokes through a BATS case.

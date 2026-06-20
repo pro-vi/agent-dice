@@ -693,6 +693,18 @@ deploy_transcript() {
     assert_output --partial "Dice count:      2"
 }
 
+@test "cli: reset on nonexistent slot errors (exit 1)" {
+    run bun "$CLI" reset no-such-slot
+    assert_failure
+    assert_output --partial "Slot not found: no-such-slot"
+}
+
+@test "cli: clear on nonexistent slot errors (exit 1)" {
+    run bun "$CLI" clear no-such-slot
+    assert_failure
+    assert_output --partial "Slot not found: no-such-slot"
+}
+
 @test "cli: roll with multi-dice accumulator" {
     deploy_transcript 14
     bun "$CLI" register roll-multi --die 20 --target 20 --message "Trigger"
@@ -1272,4 +1284,15 @@ EOF
     "
     assert_success
     assert_output --partial "PASS"
+}
+
+# ============================================================================
+# Conformance suite (plan D3): the Bun conformance runner is the single entry
+# point, wrapped here so `bun run test` runs it alongside BATS in one report.
+# ============================================================================
+
+@test "conformance: bun runner passes (C1-C10)" {
+    run bun "$PROJ_DIR/tests/conformance/run.ts"
+    assert_success
+    assert_output --partial "0 failed"
 }
