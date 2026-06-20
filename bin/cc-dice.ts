@@ -211,6 +211,10 @@ async function main(): Promise<void> {
         console.error("Error: slot name required");
         process.exit(1);
       }
+      if (!(await getSlot(name))) {
+        console.error(`Slot not found: ${name}`);
+        process.exit(1);
+      }
       const ctx = buildContext();
       await resetSlot(name, ctx);
       console.log(`Reset slot: ${name}`);
@@ -221,6 +225,10 @@ async function main(): Promise<void> {
       const name = args[1];
       if (!name) {
         console.error("Error: slot name required");
+        process.exit(1);
+      }
+      if (!(await getSlot(name))) {
+        console.error(`Slot not found: ${name}`);
         process.exit(1);
       }
       const ctx = buildContext();

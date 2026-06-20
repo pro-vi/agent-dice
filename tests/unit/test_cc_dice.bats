@@ -693,6 +693,18 @@ deploy_transcript() {
     assert_output --partial "Dice count:      2"
 }
 
+@test "cli: reset on nonexistent slot errors (exit 1)" {
+    run bun "$CLI" reset no-such-slot
+    assert_failure
+    assert_output --partial "Slot not found: no-such-slot"
+}
+
+@test "cli: clear on nonexistent slot errors (exit 1)" {
+    run bun "$CLI" clear no-such-slot
+    assert_failure
+    assert_output --partial "Slot not found: no-such-slot"
+}
+
 @test "cli: roll with multi-dice accumulator" {
     deploy_transcript 14
     bun "$CLI" register roll-multi --die 20 --target 20 --message "Trigger"
