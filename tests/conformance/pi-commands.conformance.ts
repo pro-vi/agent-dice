@@ -19,6 +19,7 @@ function capture() {
     registerCommand: (_name: string, opts: { handler: CmdHandler }) => {
       handler = opts.handler;
     },
+    registerTool: () => {},
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ccDice(pi as any);

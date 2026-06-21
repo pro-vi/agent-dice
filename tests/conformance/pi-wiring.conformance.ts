@@ -24,6 +24,7 @@ function mockPi() {
       sent.push(m); // real Pi sendMessage is fire-and-forget + never throws
     },
     registerCommand: () => {},
+    registerTool: () => {},
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { pi: pi as any, handlers, sent };

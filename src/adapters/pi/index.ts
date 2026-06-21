@@ -19,6 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as engine from "../../core/engine";
 import { createPiHost, piContext } from "./host";
 import { registerDiceCommands } from "./commands";
+import { registerDiceTools } from "./tools";
 import { sessionDepth } from "./depth";
 import { renderTrigger } from "../claude-renderer";
 
@@ -29,7 +30,9 @@ function failOpen(where: string, err: unknown): void {
 export default function ccDice(pi: ExtensionAPI): void {
   const host = createPiHost();
 
-  // /dice slash command (config UX).
+  // Config UX: agent-facing tools (natural language → configure_dice) + the /dice
+  // slash command for humans who prefer typing it.
+  registerDiceTools(pi);
   registerDiceCommands(pi);
 
   // Only a genuinely new session clears clearOnSessionStart slots — NOT resume /
