@@ -21,6 +21,8 @@ import {
   markTriggered,
   clearCooldown,
 } from "../../src/adapters/pi/store";
+import { createPiHost, piContext } from "../../src/adapters/pi/host";
+import * as engine from "../../src/core/engine";
 
 export const checks: Check[] = [
   {
@@ -81,6 +83,28 @@ export const checks: Check[] = [
         registerSlot({ name: "p2", die: 6, target: 6, onTrigger: { message: "m" } });
         assert(unregisterSlot("p2"), "unregister returns true");
         assertEqual(await getSlot("p2"), null, "slot gone after unregister");
+      }),
+  },
+  {
+    name: "pi-host: engine.checkAllSlots runs through createPiHost + node:fs store (trigger + cooldown)",
+    fn: () =>
+      withTempBase(async () => {
+        registerSlot({ name: "t", die: 1, target: 1, targetMode: "exact", type: "single", onTrigger: { message: "go" } });
+        const results = await engine.checkAllSlots(createPiHost(), piContext("sess", 0));
+        const r = results.find((x) => x.slotName === "t");
+        assert(r?.triggered === true, "d1/target1 single triggers through the Pi host");
+        assert(await hasCooldown("t", "sess"), "trigger wrote a cooldown marker via the node:fs store");
+      }),
+  },
+  {
+    name: "pi-host: accumulator depth flows from piContext through the engine",
+    fn: () =>
+      withTempBase(async () => {
+        registerSlot({ name: "acc", die: 20, target: 20, type: "accumulator", accumulationRate: 7, onTrigger: { message: "m" } });
+        await saveState("acc", "sess", { depth_at_last_trigger: 0, last_reset: "t" });
+        const r = await engine.getSlotStatus(createPiHost(), "acc", piContext("sess", 14));
+        assertEqual(r?.diceCount, 2, "depth 14 / rate 7 → 2 dice via the Pi host");
+        assertEqual(r?.currentDepth, 14, "currentDepth surfaced from piContext");
       }),
   },
 ];
