@@ -23,6 +23,8 @@ import {
 } from "../../src/adapters/pi/store";
 import { createPiHost, piContext } from "../../src/adapters/pi/host";
 import * as engine from "../../src/core/engine";
+import { SLOT_DEFAULTS as PI_DEFAULTS } from "../../src/adapters/pi/store";
+import { SLOT_DEFAULTS as CLAUDE_DEFAULTS } from "../../src/registry";
 
 export const checks: Check[] = [
   {
@@ -94,6 +96,26 @@ export const checks: Check[] = [
         const r = results.find((x) => x.slotName === "t");
         assert(r?.triggered === true, "d1/target1 single triggers through the Pi host");
         assert(await hasCooldown("t", "sess"), "trigger wrote a cooldown marker via the node:fs store");
+      }),
+  },
+  {
+    name: "pi-store: SLOT_DEFAULTS stays in sync with the Claude registry (drift guard — review #6)",
+    fn: () => {
+      const pi = PI_DEFAULTS as Record<string, unknown>;
+      const claude = CLAUDE_DEFAULTS as Record<string, unknown>;
+      const keys = [...new Set([...Object.keys(pi), ...Object.keys(claude)])].sort();
+      for (const k of keys) {
+        assertEqual(pi[k], claude[k], `SLOT_DEFAULTS.${k} differs between Pi store and Claude registry`);
+      }
+    },
+  },
+  {
+    name: "pi-store: a dotted Pi session id is accepted; slot names stay strict (review #5)",
+    fn: () =>
+      withTempBase(async (base) => {
+        await saveState("s1", "abc.def-1", { depth_at_last_trigger: 2, last_reset: "t" });
+        assert(existsSync(join(base, "state", "s1-abc.def-1.json")), "dotted session id is allowed");
+        assertEqual((await loadState("s1", "abc.def-1")).depth_at_last_trigger, 2, "round-trips under dotted session");
       }),
   },
   {

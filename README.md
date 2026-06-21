@@ -198,9 +198,11 @@ Manage slots with the `/dice` command (mirrors the CLI):
 The extension rolls on each `agent_end` (Pi's analog of Claude's Stop) and injects a
 nudge when a slot triggers. State lives under `~/.pi/agent/dice/` (or `CC_DICE_BASE`).
 
-**Tuning note:** Pi measures depth in *turns* (`turnIndex`); Claude measures
-conversation *exchanges*. Both feed the accumulator, but `accumulationRate` defaults
-are Claude-tuned — recalibrate per host if accumulators fire too often or too rarely.
+**Depth & delivery:** Pi measures depth the same way as Claude — the count of user
+messages in the session (`sessionManager.getEntries()`, the analog of Claude's
+transcript exchanges) — so `accumulationRate` defaults carry over unchanged. Trigger
+nudges are best-effort (at-most-once): cooldown/reset commit at roll time, but a nudge
+can be dropped if the session ends before Pi's next turn.
 
 ## Contributing
 

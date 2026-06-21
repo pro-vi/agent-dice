@@ -8,6 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as engine from "../../core/engine";
 import { createPiHost, piContext } from "./host";
+import { sessionDepth } from "./depth";
 import { registerSlot, unregisterSlot, getSlot, listSlots } from "./store";
 
 /** Tokenize a command arg string, honoring double-quotes (for --message "..."). */
@@ -29,17 +30,17 @@ const USAGE = [
   "/dice register <name> [--die N --target N --target-mode exact|gte|lte --type accumulator|fixed|single",
   "                       --accumulation-rate N --max-dice N --fixed-count N --cooldown per-session|none",
   "                       --no-clear-on-start --no-reset-on-trigger --no-flavor --message \"...\"]",
-  "/dice list | status <name> | roll <name> | reset <name> | clear <name>",
+  "/dice list | status <name> | roll <name> | reset <name> | clear <name> | unregister <name>",
 ].join("\n");
 
-/** Register the `/dice` command. `getDepth` returns the cached turn depth for status/roll. */
-export function registerDiceCommands(pi: ExtensionAPI, getDepth: () => number | undefined): void {
+/** Register the `/dice` command. Depth for status/roll is read from the session. */
+export function registerDiceCommands(pi: ExtensionAPI): void {
   pi.registerCommand("dice", {
     description: "cc-dice — probabilistic dice triggers",
     handler: async (args, ctx) => {
       const host = createPiHost();
       const sessionId = ctx.sessionManager.getSessionId();
-      const cctx = () => piContext(sessionId, getDepth());
+      const cctx = () => piContext(sessionId, sessionDepth(ctx));
       const t = tokenize(args);
       const sub = (t[0] ?? "help").toLowerCase();
       const name = t[1];
@@ -58,20 +59,61 @@ export function registerDiceCommands(pi: ExtensionAPI, getDepth: () => number | 
           case "register": {
             const slotName = requireName();
             if (!slotName) return;
+            // Validate AFTER coercion — reject NaN/out-of-range numbers and unknown
+            // enum values rather than persisting a corrupt slot that silently
+            // misbehaves (review #4). The Claude CLI has the same gap (deferred).
+            const die = Number(flagVal(t, "--die") ?? "20");
+            const target = Number(flagVal(t, "--target") ?? "20");
+            const accumulationRate = Number(flagVal(t, "--accumulation-rate") ?? "7");
+            const maxDice = Number(flagVal(t, "--max-dice") ?? "100");
+            const fixedCount = Number(flagVal(t, "--fixed-count") ?? "1");
+            const targetMode = flagVal(t, "--target-mode") ?? "exact";
+            const type = flagVal(t, "--type") ?? "accumulator";
+            const cooldown = flagVal(t, "--cooldown") ?? "per-session";
+
+            for (const [flag, val, min] of [
+              ["--die", die, 1],
+              ["--target", target, 1],
+              ["--accumulation-rate", accumulationRate, 1],
+              ["--max-dice", maxDice, 1],
+              ["--fixed-count", fixedCount, 1],
+            ] as Array<[string, number, number]>) {
+              if (!Number.isFinite(val) || val < min) {
+                notify(`Invalid ${flag}: must be a number >= ${min}`, "error");
+                return;
+              }
+            }
+            if (target > die) {
+              notify(`Invalid --target ${target}: exceeds die size ${die}`, "error");
+              return;
+            }
+            if (!["exact", "gte", "lte"].includes(targetMode)) {
+              notify(`Invalid --target-mode "${targetMode}" (exact|gte|lte)`, "error");
+              return;
+            }
+            if (!["accumulator", "fixed", "single"].includes(type)) {
+              notify(`Invalid --type "${type}" (accumulator|fixed|single)`, "error");
+              return;
+            }
+            if (!["per-session", "none"].includes(cooldown)) {
+              notify(`Invalid --cooldown "${cooldown}" (per-session|none)`, "error");
+              return;
+            }
+
             const cfg = registerSlot({
               name: slotName,
-              die: Number(flagVal(t, "--die") ?? "20"),
-              target: Number(flagVal(t, "--target") ?? "20"),
-              targetMode: (flagVal(t, "--target-mode") ?? "exact") as "exact" | "gte" | "lte",
-              type: (flagVal(t, "--type") ?? "accumulator") as "accumulator" | "fixed" | "single",
-              accumulationRate: Number(flagVal(t, "--accumulation-rate") ?? "7"),
-              maxDice: Number(flagVal(t, "--max-dice") ?? "100"),
-              fixedCount: Number(flagVal(t, "--fixed-count") ?? "1"),
-              cooldown: (flagVal(t, "--cooldown") ?? "per-session") as "per-session" | "none",
+              die,
+              target,
+              targetMode: targetMode as "exact" | "gte" | "lte",
+              type: type as "accumulator" | "fixed" | "single",
+              accumulationRate,
+              maxDice,
+              fixedCount,
+              cooldown: cooldown as "per-session" | "none",
               clearOnSessionStart: !hasFlag(t, "--no-clear-on-start"),
               resetOnTrigger: !hasFlag(t, "--no-reset-on-trigger"),
               flavor: !hasFlag(t, "--no-flavor"),
-              onTrigger: { message: flagVal(t, "--message") ?? `Dice trigger: ${name}` },
+              onTrigger: { message: flagVal(t, "--message") ?? `Dice trigger: ${slotName}` },
             });
             notify(`Registered: ${cfg.name} (${cfg.type}, d${cfg.die}, target=${cfg.target} ${cfg.targetMode})`);
             return;

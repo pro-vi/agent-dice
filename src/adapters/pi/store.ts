@@ -13,11 +13,22 @@ import { homedir } from "node:os";
 import type { DiceSlotConfig, DiceState } from "../../types";
 
 const SAFE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+// Pi session ids may contain dots (assertValidSessionId, pi session-manager.ts:208):
+// start/end alphanumeric, [A-Za-z0-9._-] within. Rejecting dots (review #5) silently
+// disabled dice for `pi --session foo.bar`. Still filename-safe: no leading dot, no / or \.
+const SAFE_SESSION_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
-/** Validate slot/session names used in file paths (mirrors src/registry.ts). */
+/** Validate a slot name used in file paths (strict — no dots; mirrors src/registry.ts). */
 export function validateName(name: string, label = "name"): void {
   if (!SAFE_NAME_RE.test(name)) {
     throw new Error(`Invalid ${label} "${name}": must start with alphanumeric, contain only [a-zA-Z0-9_-]`);
+  }
+}
+
+/** Validate a session id, matching Pi's contract (allows dots; rejects path traversal). */
+export function validateSessionId(id: string): void {
+  if (!SAFE_SESSION_RE.test(id)) {
+    throw new Error(`Invalid session ID "${id}": must start/end alphanumeric with [A-Za-z0-9._-] within`);
   }
 }
 
@@ -107,7 +118,7 @@ export async function listSlots(): Promise<DiceSlotConfig[]> {
 
 export function getStateFile(slotName: string, sessionId: string): string {
   validateName(slotName, "slot name");
-  validateName(sessionId, "session ID");
+  validateSessionId(sessionId);
   return join(stateDir(), `${slotName}-${sessionId}.json`);
 }
 
@@ -132,7 +143,7 @@ export async function clearState(slotName: string, sessionId: string): Promise<v
 
 function markerFile(slotName: string, sessionId: string): string {
   validateName(slotName, "slot name");
-  validateName(sessionId, "session ID");
+  validateSessionId(sessionId);
   return join(stateDir(), `triggered-${slotName}-${sessionId}`);
 }
 

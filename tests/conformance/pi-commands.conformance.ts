@@ -27,7 +27,10 @@ function capture() {
 
 function ctx(sessionId: string, out: Array<{ text: string; type?: string }>) {
   return {
-    sessionManager: { getSessionId: () => sessionId },
+    sessionManager: {
+      getSessionId: () => sessionId,
+      getEntries: () => [] as unknown[], // depth 0 — command tests use depth-independent slots
+    },
     ui: { notify: (text: string, type?: string) => out.push({ text, type }) },
   };
 }
@@ -73,6 +76,23 @@ export const checks: Check[] = [
         assertEqual(out.at(-1)?.text, "Error: slot name required", "missing name");
         await dice("frobnicate", ctx("s", out));
         assert(out.at(-1)?.text.includes("/dice register"), "unknown subcommand → usage");
+      }),
+  },
+  {
+    name: "/dice register: invalid flags are rejected, not persisted (review #4)",
+    fn: () =>
+      withTempBase(async () => {
+        const { getSlot } = await import("../../src/adapters/pi/store");
+        const dice = capture();
+        const out: Array<{ text: string; type?: string }> = [];
+        await dice("register bad1 --die abc", ctx("s", out));
+        assert(out.at(-1)?.type === "error" && /Invalid --die/.test(out.at(-1)!.text), `NaN die rejected: ${out.at(-1)?.text}`);
+        assertEqual(await getSlot("bad1"), null, "corrupt slot not persisted");
+        await dice("register bad2 --cooldown bogus", ctx("s", out));
+        assert(out.at(-1)?.type === "error" && /Invalid --cooldown/.test(out.at(-1)!.text), `bad enum rejected: ${out.at(-1)?.text}`);
+        assertEqual(await getSlot("bad2"), null, "bad-enum slot not persisted");
+        await dice("register bad3 --die 6 --target 20", ctx("s", out));
+        assert(out.at(-1)?.type === "error" && /exceeds die size/.test(out.at(-1)!.text), `target>die rejected: ${out.at(-1)?.text}`);
       }),
   },
 ];
