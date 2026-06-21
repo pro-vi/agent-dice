@@ -44,20 +44,22 @@ export function registerDiceCommands(pi: ExtensionAPI, getDepth: () => number | 
       const sub = (t[0] ?? "help").toLowerCase();
       const name = t[1];
       const notify = (text: string, type: "info" | "warning" | "error" = "info") => ctx.ui.notify(text, type);
-      const needName = (): boolean => {
+      // Returns the validated name (narrowed to string) or null after notifying.
+      const requireName = (): string | null => {
         if (!name) {
           notify("Error: slot name required", "error");
-          return false;
+          return null;
         }
-        return true;
+        return name;
       };
 
       try {
         switch (sub) {
           case "register": {
-            if (!needName()) return;
+            const slotName = requireName();
+            if (!slotName) return;
             const cfg = registerSlot({
-              name: name as string,
+              name: slotName,
               die: Number(flagVal(t, "--die") ?? "20"),
               target: Number(flagVal(t, "--target") ?? "20"),
               targetMode: (flagVal(t, "--target-mode") ?? "exact") as "exact" | "gte" | "lte",
@@ -84,10 +86,11 @@ export function registerDiceCommands(pi: ExtensionAPI, getDepth: () => number | 
             return;
           }
           case "status": {
-            if (!needName()) return;
-            const status = await engine.getSlotStatus(host, name as string, cctx());
+            const slotName = requireName();
+            if (!slotName) return;
+            const status = await engine.getSlotStatus(host, slotName, cctx());
             if (!status) {
-              notify(`Slot not found: ${name}`, "error");
+              notify(`Slot not found: ${slotName}`, "error");
               return;
             }
             const lines = [
@@ -102,44 +105,47 @@ export function registerDiceCommands(pi: ExtensionAPI, getDepth: () => number | 
             return;
           }
           case "roll": {
-            if (!needName()) return;
-            const config = await getSlot(name as string);
+            const slotName = requireName();
+            if (!slotName) return;
+            const config = await getSlot(slotName);
             if (!config) {
-              notify(`Slot not found: ${name}`, "error");
+              notify(`Slot not found: ${slotName}`, "error");
               return;
             }
-            const status = await engine.getSlotStatus(host, name as string, cctx());
+            const status = await engine.getSlotStatus(host, slotName, cctx());
             const diceCount = status?.diceCount ?? 0;
             if (diceCount <= 0) {
-              notify(`${name}: 0 dice (no roll)`);
+              notify(`${slotName}: 0 dice (no roll)`);
               return;
             }
             const preview = engine.previewSlot(config, diceCount);
             notify(
-              `${name}: ${diceCount}d${config.die} = [${preview.rolls.join(", ")}] (best: ${preview.best}, ${preview.probability}%)${preview.triggered ? " TRIGGERED!" : ""}`
+              `${slotName}: ${diceCount}d${config.die} = [${preview.rolls.join(", ")}] (best: ${preview.best}, ${preview.probability}%)${preview.triggered ? " TRIGGERED!" : ""}`
             );
             return;
           }
           case "reset":
           case "clear": {
-            if (!needName()) return;
-            if (!(await getSlot(name as string))) {
-              notify(`Slot not found: ${name}`, "error");
+            const slotName = requireName();
+            if (!slotName) return;
+            if (!(await getSlot(slotName))) {
+              notify(`Slot not found: ${slotName}`, "error");
               return;
             }
             if (sub === "reset") {
-              await engine.resetSlot(host, name as string, cctx());
-              notify(`Reset slot: ${name}`);
+              await engine.resetSlot(host, slotName, cctx());
+              notify(`Reset slot: ${slotName}`);
             } else {
-              await engine.clearSlot(host, name as string, cctx());
-              notify(`Cleared slot: ${name}`);
+              await engine.clearSlot(host, slotName, cctx());
+              notify(`Cleared slot: ${slotName}`);
             }
             return;
           }
           case "unregister": {
-            if (!needName()) return;
-            const removed = unregisterSlot(name as string);
-            notify(removed ? `Removed slot: ${name}` : `Slot not found: ${name}`, removed ? "info" : "error");
+            const slotName = requireName();
+            if (!slotName) return;
+            const removed = unregisterSlot(slotName);
+            notify(removed ? `Removed slot: ${slotName}` : `Slot not found: ${slotName}`, removed ? "info" : "error");
             return;
           }
           default:
