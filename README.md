@@ -1,28 +1,30 @@
-# cc-dice
+# agent-dice
 
-Probabilistic dice triggers for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks.
+Probabilistic dice triggers for AI agent hooks — one host-agnostic engine with adapters for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Pi](https://github.com/badlogic/pi-mono).
 
-Register dice slots, and cc-dice rolls them on every Claude Code stop event. Accumulators escalate probability with conversation depth; single/fixed slots give flat odds.
+> Formerly **cc-dice**. The `cc-dice` command and `CC_DICE_*` env vars still work as aliases, so existing setups keep running.
+
+Register dice slots, and agent-dice rolls them on every agent stop event. Accumulators escalate probability with conversation depth; single/fixed slots give flat odds.
 
 ## Why
 
 Claude Code sessions are long-running, stateful, and unpredictable, which reminds me of a video game. Very much like a tabletop RPG campaign. In D&D, dice are the core mechanic that makes emergent behavior possible. A Natural 20 happens because probability demands it and it changes the course of the game.
 
-cc-dice is more of a nod to the mechanics than trying to become a sophisticated plugin. In fact, you can create a stop hook yourself with a flat 5% chance to mimic a d20 roll. However, cc-dice gives you what a one-liner can't: accumulating dice pools across turns, shared rolls across multiple slots, per-session cooldowns, and state that persists across turns.
+agent-dice is more of a nod to the mechanics than trying to become a sophisticated plugin. In fact, you can create a stop hook yourself with a flat 5% chance to mimic a d20 roll. However, agent-dice gives you what a one-liner can't: accumulating dice pools across turns, shared rolls across multiple slots, per-session cooldowns, and state that persists across turns.
 
 This creates moments that feel organic rather than scheduled. A prompt to invoke a skill that fires at turn 42 because the dice finally landed without any intervention. Your agents are part of the campaign.
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pro-vi/cc-dice/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pro-vi/agent-dice/main/install.sh | bash
 ```
 
 Or clone locally:
 
 ```bash
-git clone https://github.com/pro-vi/cc-dice.git
-cd cc-dice && ./install.sh
+git clone https://github.com/pro-vi/agent-dice.git
+cd agent-dice && ./install.sh
 ```
 
 Requires [bun](https://bun.sh), [git](https://git-scm.com), and [jq](https://jqlang.github.io/jq/).
@@ -36,20 +38,20 @@ Requires [bun](https://bun.sh), [git](https://git-scm.com), and [jq](https://jql
 
 ```bash
 # Register an accumulator slot (escalating probability)
-cc-dice register refactor \
+agent-dice register refactor \
   --die 20 --target 20 --type accumulator \
   --message "Cast /refactor and review your current work."
 
 # Register a flat-chance slot
-cc-dice register second-opinion \
+agent-dice register second-opinion \
   --die 20 --target 2 --type single \
   --message "Get a second opinion (e.g. from codex)."
 
 # Check status
-cc-dice status refactor
+agent-dice status refactor
 
 # Manual roll (dry run, no state change)
-cc-dice roll second-opinion
+agent-dice roll second-opinion
 ```
 
 That's it. The installed stop hook rolls all slots automatically on every Claude Code stop event.
@@ -69,7 +71,7 @@ A **SessionStart** hook clears state for slots with `clearOnSessionStart` (defau
 ## Slot Configuration
 
 ```bash
-cc-dice register <name> [options]
+agent-dice register <name> [options]
 ```
 
 | Option | Default | Description |
@@ -119,13 +121,13 @@ This means registering `reflection` (target 20) and `second-opinion` (target 1) 
 ## CLI Reference
 
 ```
-cc-dice register <name> [options]   Register a dice slot
-cc-dice unregister <name>           Remove a slot
-cc-dice list                        List all slots
-cc-dice status <name>               Show dice status
-cc-dice roll <name>                 Dry-run roll
-cc-dice reset <name>                Reset accumulator
-cc-dice clear <name>                Clear state
+agent-dice register <name> [options]   Register a dice slot
+agent-dice unregister <name>           Remove a slot
+agent-dice list                        List all slots
+agent-dice status <name>               Show dice status
+agent-dice roll <name>                 Dry-run roll
+agent-dice reset <name>                Reset accumulator
+agent-dice clear <name>                Clear state
 ```
 
 ## Storage
@@ -157,21 +159,23 @@ import { registerSlot, checkAllSlots } from "./src/index";
 
 | Variable | Purpose |
 |----------|---------|
-| `CC_DICE_BASE` | Override base directory (default: `~/.claude/dice/`) |
-| `CC_DICE_SESSION_ID` | Override session ID |
+| `AGENT_DICE_BASE` | Override base directory (default: `~/.claude/dice/`, or `~/.pi/agent/dice/` under Pi) |
+| `AGENT_DICE_SESSION_ID` | Override session ID |
 | `DEBUG=1` | Verbose logging to stderr |
+
+`CC_DICE_BASE` / `CC_DICE_SESSION_ID` remain supported as back-compat aliases (read when the `AGENT_DICE_*` form isn't set; the session-start hook sets both).
 
 ## Troubleshooting
 
 **`./install.sh check` shows broken symlinks**: The source directory was moved or deleted. Re-run `./install.sh` to re-link.
 
-**Hook not firing**: Verify with `./install.sh check` that hooks are registered in `settings.json`. Use `cc-dice roll <name>` to test a dry run.
+**Hook not firing**: Verify with `./install.sh check` that hooks are registered in `settings.json`. Use `agent-dice roll <name>` to test a dry run.
 
-**State not clearing between sessions**: Ensure the SessionStart hook is registered. Use `cc-dice clear <name>` to reset a specific slot manually.
+**State not clearing between sessions**: Ensure the SessionStart hook is registered. Use `agent-dice clear <name>` to reset a specific slot manually.
 
 ## Architecture
 
-cc-dice is a thin host **facade over a reusable, host-agnostic dice core**.
+agent-dice is a thin host **facade over a reusable, host-agnostic dice core**.
 Scheduling (dice counts, shared rolls, cooldowns, sentinel calibration) lives in
 `src/core/`; everything host-specific (transcripts/sessions, file storage, hook or
 event output) lives in `src/adapters/`. The Claude Code public API in `src/index.ts`
@@ -181,11 +185,13 @@ researched but not yet built.
 
 ## Use with Pi
 
-cc-dice also ships as a [Pi](https://github.com/badlogic/pi-mono) extension — the
+agent-dice also ships as a [Pi](https://github.com/badlogic/pi-mono) extension — the
 same core engine behind a Pi adapter.
 
 ```bash
-pi install git:github.com/pro-vi/cc-dice
+pi install npm:agent-dice
+# or from source:
+pi install git:github.com/pro-vi/agent-dice
 ```
 
 Manage slots with the `/dice` command (mirrors the CLI):
@@ -196,7 +202,7 @@ Manage slots with the `/dice` command (mirrors the CLI):
 ```
 
 The extension rolls on each `agent_end` (Pi's analog of Claude's Stop) and injects a
-nudge when a slot triggers. State lives under `~/.pi/agent/dice/` (or `CC_DICE_BASE`).
+nudge when a slot triggers. State lives under `~/.pi/agent/dice/` (or `AGENT_DICE_BASE`).
 
 **Depth & delivery:** Pi measures depth the same way as Claude — the count of user
 messages in the session (`sessionManager.getEntries()`, the analog of Claude's
@@ -207,8 +213,8 @@ can be dropped if the session ends before Pi's next turn.
 ## Contributing
 
 ```bash
-git clone --recurse-submodules https://github.com/pro-vi/cc-dice.git
-cd cc-dice
+git clone --recurse-submodules https://github.com/pro-vi/agent-dice.git
+cd agent-dice
 bun install
 bun run test   # BATS suite + conformance probes (bare `bun test` won't run BATS)
 ```

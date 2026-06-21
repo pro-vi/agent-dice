@@ -1,7 +1,7 @@
 /**
  * CLI surface conformance.
  *
- * Drives the real `bin/cc-dice.ts` as a subprocess and pins stdout + exit code for
+ * Drives the real `bin/agent-dice.ts` as a subprocess and pins stdout + exit code for
  * EVERY command and error path. This is the gate that would have caught the
  * reset/clear exit-code inconsistency without anyone having to test by hand — it
  * runs on every `bun run test`. Each check uses its own temp CC_DICE_BASE.
@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
-const CLI = resolve(import.meta.dir, "../../bin/cc-dice.ts");
+const CLI = resolve(import.meta.dir, "../../bin/agent-dice.ts");
 
 type Result = { stdout: string; stderr: string; code: number };
 
@@ -47,7 +47,7 @@ export const checks: Check[] = [
       for (const args of [[], ["help"], ["--help"], ["-h"]]) {
         const r = await cli(args, freshEnv());
         assert(r.code === 0, `\`${args.join(" ") || "<none>"}\` exits 0 (got ${r.code})`);
-        assert(r.stdout.includes("Usage: cc-dice"), `\`${args.join(" ")}\` prints usage`);
+        assert(r.stdout.includes("Usage: agent-dice"), `\`${args.join(" ")}\` prints usage`);
       }
     },
   },

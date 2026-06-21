@@ -47,7 +47,8 @@ export const SLOT_DEFAULTS: Partial<DiceSlotConfig> = {
 
 /** Base dir for cc-dice data under Pi. Default ~/.pi/agent/dice, overridable via CC_DICE_BASE. */
 export function getBaseDir(): string {
-  if (process.env.CC_DICE_BASE) return process.env.CC_DICE_BASE;
+  const base = process.env.AGENT_DICE_BASE ?? process.env.CC_DICE_BASE; // CC_DICE_BASE: back-compat
+  if (base) return base;
   return join(homedir(), ".pi", "agent", "dice");
 }
 

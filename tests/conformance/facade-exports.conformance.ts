@@ -52,15 +52,16 @@ export const checks: Check[] = [
     },
   },
   {
-    name: "C10: package.json keeps name, bin.cc-dice, main",
+    name: "C10: package.json — name agent-dice, agent-dice bin + cc-dice alias, main",
     fn: async () => {
       const pkg = (await Bun.file(new URL("../../package.json", import.meta.url)).json()) as {
         name: string;
         bin?: Record<string, string>;
         main: string;
       };
-      assertEqual(pkg.name, "cc-dice", "package.name");
-      assertEqual(pkg.bin?.["cc-dice"], "./bin/cc-dice.ts", "package.bin.cc-dice");
+      assertEqual(pkg.name, "agent-dice", "package.name");
+      assertEqual(pkg.bin?.["agent-dice"], "./bin/agent-dice.ts", "package.bin.agent-dice");
+      assertEqual(pkg.bin?.["cc-dice"], "./bin/agent-dice.ts", "cc-dice alias preserved (back-compat)");
       assertEqual(pkg.main, "src/index.ts", "package.main");
     },
   },

@@ -1,4 +1,4 @@
-# CC-Dice
+# agent-dice
 
 Probabilistic dice trigger system for Claude Code hooks.
 
@@ -8,7 +8,7 @@ Probabilistic dice trigger system for Claude Code hooks.
 - `src/core/` — Host-agnostic engine + `DiceHost` contract + pure accumulator (no Claude/Bun/fs)
 - `src/adapters/` — Claude Code adapter (file stores, session/depth resolution) + trigger renderer
 - `src/{registry,state,cooldown,transcript,session,roll}.ts` — Claude/file primitives
-- `bin/cc-dice.ts` — CLI entrypoint
+- `bin/agent-dice.ts` — CLI entrypoint
 - `hooks/` — Claude Code hook scripts (stop, session-start)
 - `install.sh` — Installer (symlinks, hook registration, dependency checks)
 - `tests/unit/test_cc_dice.bats` — BATS test suite
@@ -30,7 +30,7 @@ DEBUG=1 bun hooks/stop.ts    # run stop hook with verbose logging
 - **Boundary**: nothing under `src/core/**` may import a Claude/host module, node builtin, `Bun`, or `process.env` (enforced by conformance check C8).
 - **Slots**: Named dice configurations persisted to `~/.claude/dice/slots.json`
 - **Shared pools**: `checkAllSlots()` groups slots by die size, rolls one base die per group
-- **Session isolation**: State is per-slot AND per-session via `CC_DICE_SESSION_ID`
+- **Session isolation**: State is per-slot AND per-session via `AGENT_DICE_SESSION_ID` (or the `CC_DICE_SESSION_ID` back-compat alias)
 - **Hook exit codes**: `0` = silent, `2` = stderr shown to Claude
 
 ## Testing
@@ -46,6 +46,6 @@ bun run test
 
 | Variable | Purpose |
 |----------|---------|
-| `CC_DICE_BASE` | Override base directory (default: `~/.claude/dice/`) |
-| `CC_DICE_SESSION_ID` | Override session ID |
+| `AGENT_DICE_BASE` | Override base directory (default: `~/.claude/dice/`; `CC_DICE_BASE` is a back-compat alias) |
+| `AGENT_DICE_SESSION_ID` | Override session ID (`CC_DICE_SESSION_ID` is a back-compat alias) |
 | `DEBUG=1` | Verbose logging to stderr |

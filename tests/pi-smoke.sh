@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live Pi smoke for the cc-dice extension.
+# Live Pi smoke for the agent-dice extension.
 #
 # Requires `pi` on PATH (the @earendil-works Pi agent). Model-free: only exercises
 # the /dice LOCAL slash command, so it never calls a model. Verifies the extension
@@ -32,4 +32,4 @@ echo "==> /dice list + status (extension loads, commands resolve)"
 CC_DICE_BASE="$BASE" pi "${PIFLAGS[@]}" -p '/dice list' >/dev/null 2>&1
 CC_DICE_BASE="$BASE" pi "${PIFLAGS[@]}" -p '/dice status smoke' >/dev/null 2>&1
 
-echo "PASS: cc-dice Pi extension loads and /dice writes through the store"
+echo "PASS: agent-dice Pi extension loads and /dice writes through the store"

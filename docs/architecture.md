@@ -1,27 +1,27 @@
-# Architecture — CC-Dice
+# Architecture — agent-dice
 
-This document records the origin, architecture, and design decisions of cc-dice.
+This document records the origin, architecture, and design decisions of agent-dice.
 
 ---
 
 ## Origin
 
-cc-dice was extracted from [cc-reflection](https://github.com/pro-vi/cc-reflection), which had a dice accumulator system baked directly into its codebase. The dice logic was generic — nothing about rolling d20s and checking for Natural 20 is reflection-specific — but it was entangled with reflection's session management, state directories, and CLI dispatcher.
+agent-dice was extracted from [cc-reflection](https://github.com/pro-vi/cc-reflection), which had a dice accumulator system baked directly into its codebase. The dice logic was generic — nothing about rolling d20s and checking for Natural 20 is reflection-specific — but it was entangled with reflection's session management, state directories, and CLI dispatcher.
 
 The extraction (2026-02-14) produced a standalone package that any Claude Code tool can depend on for probabilistic triggering. cc-reflection became a thin consumer: -939 lines removed, stop hooks reduced to ~15 lines each.
 
-**Why a bun package, not a Claude Code plugin?** Plugins can register hooks but can't expose APIs that other plugins consume. cc-dice needs to be importable as a library.
+**Why a bun package, not a Claude Code plugin?** Plugins can register hooks but can't expose APIs that other plugins consume. agent-dice needs to be importable as a library.
 
 ---
 
 ## Architecture: Core + Adapters
 
-cc-dice is the **Claude Code facade over a reusable dice core**. The scheduling
+agent-dice is the **Claude Code facade over a reusable dice core**. The scheduling
 logic is host-agnostic; everything Claude-specific (transcripts, session env vars,
 file storage, hook rendering) lives in an adapter behind a small contract.
 
 ```
-bin/cc-dice.ts, hooks/stop.ts, hooks/session-start.ts
+bin/agent-dice.ts, hooks/stop.ts, hooks/session-start.ts
         |
         v
 src/index.ts                   public compatibility facade (unchanged API)
@@ -49,12 +49,12 @@ A boundary conformance test (C8) fails if anything under `src/core/**` imports a
 Claude/host module, a node builtin, `Bun`, or `process.env`.
 
 **Reusability:** the engine now drives a **second host**. The Pi adapter under
-`src/adapters/pi/` (installed via `pi install git:github.com/pro-vi/cc-dice`)
+`src/adapters/pi/` (installed via `pi install git:github.com/pro-vi/agent-dice`)
 implements `DiceHost` without importing any Claude transcript/session helpers —
 validating the seam with **zero changes to core**. Pi rolls on `agent_end` (its
 analog of Claude's Stop), caches depth from `turn_end`'s `turnIndex` (no transcript
 parse), persists state via `node:fs` under `~/.pi/agent/dice/`, and injects nudges
-via `pi.sendMessage`. A Codex adapter is researched but not yet built. cc-dice
+via `pi.sendMessage`. A Codex adapter is researched but not yet built. agent-dice
 remains the Claude Code distribution; Pi is an additional host on the same core.
 
 ---
@@ -198,14 +198,14 @@ Simple, portable, inspectable. `slots.json` can be edited by hand.
 
 ### Separate repo, not monorepo
 
-Independent versioning, independent install, independent git history. cc-dice may get consumers beyond cc-reflection.
+Independent versioning, independent install, independent git history. agent-dice may get consumers beyond cc-reflection.
 
 ---
 
 ## File Map
 
 ```
-cc-dice/
+agent-dice/
   package.json              Package config (bun-only)
   tsconfig.json             TypeScript config
   README.md                 User-facing docs
@@ -237,7 +237,7 @@ cc-dice/
     hook-helpers.ts         Stdin parsing + exit code handling
 
   bin/
-    cc-dice.ts              CLI entrypoint
+    agent-dice.ts              CLI entrypoint
 
   hooks/
     stop.ts                 Generic stop hook (checks all slots)

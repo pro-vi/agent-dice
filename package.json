@@ -1,11 +1,12 @@
 {
-  "name": "cc-dice",
-  "version": "0.3.0",
-  "description": "Generic probabilistic dice trigger system for Claude Code hooks",
+  "name": "agent-dice",
+  "version": "0.4.0",
+  "description": "Probabilistic dice triggers for AI agent hooks — host-agnostic core with Claude Code and Pi adapters",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
-    "cc-dice": "./bin/cc-dice.ts"
+    "agent-dice": "./bin/agent-dice.ts",
+    "cc-dice": "./bin/agent-dice.ts"
   },
   "files": [
     "src",
@@ -23,15 +24,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/pro-vi/cc-dice.git"
+    "url": "https://github.com/pro-vi/agent-dice.git"
   },
-  "homepage": "https://github.com/pro-vi/cc-dice#readme",
+  "homepage": "https://github.com/pro-vi/agent-dice#readme",
   "bugs": {
-    "url": "https://github.com/pro-vi/cc-dice/issues"
+    "url": "https://github.com/pro-vi/agent-dice/issues"
   },
   "author": "provi",
   "license": "MIT",
-  "keywords": ["claude-code", "pi-extension", "dice", "hooks"],
+  "keywords": ["agent", "claude-code", "pi", "pi-extension", "dice", "hooks"],
   "pi": {
     "extensions": ["./src/adapters/pi/index.ts"]
   },

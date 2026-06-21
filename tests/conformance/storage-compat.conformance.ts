@@ -77,4 +77,23 @@ export const checks: Check[] = [
         assertEqual(st.depth_at_last_trigger, 0, "sentinel -1 calibrated and persisted to 0");
       }),
   },
+  {
+    name: "env back-compat: AGENT_DICE_BASE preferred; CC_DICE_BASE still honored",
+    fn: async () => {
+      const { getBaseDir } = await import("../../src/registry");
+      const saved = { a: process.env.AGENT_DICE_BASE, c: process.env.CC_DICE_BASE };
+      try {
+        delete process.env.AGENT_DICE_BASE;
+        process.env.CC_DICE_BASE = "/tmp/cc-dice-bc";
+        assertEqual(getBaseDir(), "/tmp/cc-dice-bc", "CC_DICE_BASE honored (back-compat)");
+        process.env.AGENT_DICE_BASE = "/tmp/agent-dice-bc";
+        assertEqual(getBaseDir(), "/tmp/agent-dice-bc", "AGENT_DICE_BASE takes precedence");
+      } finally {
+        if (saved.a === undefined) delete process.env.AGENT_DICE_BASE;
+        else process.env.AGENT_DICE_BASE = saved.a;
+        if (saved.c === undefined) delete process.env.CC_DICE_BASE;
+        else process.env.CC_DICE_BASE = saved.c;
+      }
+    },
+  },
 ];

@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 /**
- * cc-dice CLI entrypoint
+ * agent-dice CLI entrypoint (also available as the `cc-dice` alias)
  *
- * Usage: cc-dice <command> [options]
+ * Usage: agent-dice <command> [options]
  *
  * Slot Management:
  *   register <name> [options]    Register a dice slot
@@ -36,7 +36,7 @@ const args = process.argv.slice(2);
 const command = args[0];
 
 function printUsage(): void {
-  console.log(`Usage: cc-dice <command> [options]
+  console.log(`Usage: agent-dice <command> [options]
 
 Slot Management:
   register <name> [options]    Register a dice slot

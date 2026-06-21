@@ -29,11 +29,8 @@ export function getProjectHash(): string {
  * 2. null (no UUID available)
  */
 export function getClaudeSessionId(): string | null {
-  if (process.env.CC_DICE_SESSION_ID) {
-    return process.env.CC_DICE_SESSION_ID;
-  }
-
-  return null;
+  // AGENT_DICE_SESSION_ID is current; CC_DICE_SESSION_ID kept for back-compat (e.g. cc-reflection).
+  return process.env.AGENT_DICE_SESSION_ID ?? process.env.CC_DICE_SESSION_ID ?? null;
 }
 
 /**

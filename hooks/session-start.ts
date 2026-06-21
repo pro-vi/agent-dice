@@ -19,7 +19,12 @@ try {
 
   if (envFile && sessionId && /^[A-Za-z0-9-]{1,128}$/.test(sessionId)) {
     const { appendFileSync } = await import("fs");
-    appendFileSync(envFile, `export CC_DICE_SESSION_ID="${sessionId}"\n`);
+    // Set both names: AGENT_DICE_SESSION_ID (current) + CC_DICE_SESSION_ID (back-compat,
+    // e.g. cc-reflection still reads it).
+    appendFileSync(
+      envFile,
+      `export AGENT_DICE_SESSION_ID="${sessionId}"\nexport CC_DICE_SESSION_ID="${sessionId}"\n`
+    );
   }
 } catch {
   // Fail silently — don't block session start

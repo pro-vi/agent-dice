@@ -16,7 +16,9 @@ import type { DiceSlotConfig } from "./types";
  * Default: ~/.claude/dice/, overridable via CC_DICE_BASE env var.
  */
 export function getBaseDir(): string {
-  if (process.env.CC_DICE_BASE) return process.env.CC_DICE_BASE;
+  // AGENT_DICE_BASE is the current name; CC_DICE_BASE kept for back-compat.
+  const base = process.env.AGENT_DICE_BASE ?? process.env.CC_DICE_BASE;
+  if (base) return base;
   const home = process.env.HOME;
   if (!home) throw new Error("Cannot resolve base dir: set CC_DICE_BASE or HOME");
   return join(home, ".claude", "dice");

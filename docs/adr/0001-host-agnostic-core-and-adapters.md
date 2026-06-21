@@ -6,6 +6,9 @@
 - **Deciders:** provi; Claude Code; cross-model `/code-review`
 - **Supersedes:** —
 
+> **Renamed:** the package became **agent-dice** in v0.4.0 (the `cc-dice` command and
+> `CC_DICE_*` env vars remain as aliases). "cc-dice" below is the original name.
+
 ## Amendment (2026-06-20): validated by the Pi adapter
 
 The "a second host is actually built → finalize the contract" revisit trigger has

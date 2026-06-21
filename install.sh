@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# CC-Dice Installer
-# Installs the dice trigger system for Claude Code hooks
+# agent-dice installer
+# Installs the dice trigger system for Claude Code (CLI: agent-dice, with cc-dice alias)
 
 set -e
 
-REPO_URL="https://github.com/pro-vi/cc-dice.git"
-CLONE_DIR="${HOME}/.local/share/cc-dice"
+REPO_URL="https://github.com/pro-vi/agent-dice.git"
+CLONE_DIR="${HOME}/.local/share/agent-dice"
 DICE_BASE="${HOME}/.claude/dice"
 HOOKS_DIR="${HOME}/.claude/hooks"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -20,7 +20,7 @@ NC='\033[0m'
 
 print_header() {
     echo -e "${BLUE}================================${NC}"
-    echo -e "${BLUE}  CC-Dice Installer${NC}"
+    echo -e "${BLUE}  agent-dice installer${NC}"
     echo -e "${BLUE}================================${NC}"
     echo ""
 }
@@ -161,7 +161,7 @@ resolve_source_dir() {
         if [ -d "$CLONE_DIR/.git" ]; then
             git -C "$CLONE_DIR" pull --quiet 2>/dev/null || true
         else
-            print_info "Cloning cc-dice..."
+            print_info "Cloning agent-dice..."
             git clone --quiet --depth 1 "$REPO_URL" "$CLONE_DIR"
         fi
         SCRIPT_DIR="$CLONE_DIR"
@@ -171,7 +171,7 @@ resolve_source_dir() {
 # ---- Installation ----
 
 install_dice() {
-    print_info "Installing cc-dice..."
+    print_info "Installing agent-dice..."
 
     # Create directory structure
     mkdir -p "$DICE_BASE/state"
@@ -192,8 +192,9 @@ install_dice() {
     # Symlink CLI
     local bin_dir="${HOME}/.local/bin"
     mkdir -p "$bin_dir"
-    ln -sf "$SCRIPT_DIR/bin/cc-dice.ts" "$bin_dir/cc-dice"
-    print_success "Symlinked CLI to $bin_dir/cc-dice"
+    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice"
+    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice"
+    print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
 }
 
 register_hooks() {
@@ -205,11 +206,11 @@ register_hooks() {
 
 show_check() {
     echo ""
-    echo "CC-Dice Installation Check"
+    echo "agent-dice Installation Check"
     echo ""
 
     # Quick check: if base dir doesn't exist, nothing is installed
-    if [ ! -d "$DICE_BASE" ] && [ ! -L "${HOME}/.local/bin/cc-dice" ] && [ ! -f "$HOOKS_DIR/dice-stop.ts" ]; then
+    if [ ! -d "$DICE_BASE" ] && [ ! -L "${HOME}/.local/bin/agent-dice" ] && [ ! -f "$HOOKS_DIR/dice-stop.ts" ]; then
         echo -e "  ${BLUE}Not installed.${NC} Run ${BLUE}./install.sh${NC} to install."
         echo ""
         return 0
@@ -273,8 +274,8 @@ show_check() {
     fi
 
     # Check CLI
-    if [ -L "${HOME}/.local/bin/cc-dice" ]; then
-        if [ -e "${HOME}/.local/bin/cc-dice" ]; then
+    if [ -L "${HOME}/.local/bin/agent-dice" ]; then
+        if [ -e "${HOME}/.local/bin/agent-dice" ]; then
             echo -e "  ${GREEN}ok${NC} CLI symlink"
         else
             echo -e "  ${RED}err${NC} CLI symlink broken (target missing)"
@@ -306,7 +307,7 @@ show_check() {
 }
 
 uninstall() {
-    print_info "Uninstalling cc-dice..."
+    print_info "Uninstalling agent-dice..."
 
     # Unregister hooks
     unregister_hook "Stop" "dice-stop" || true
@@ -317,9 +318,9 @@ uninstall() {
     rm -f "$HOOKS_DIR/dice-session-start.ts"
     print_success "Removed hooks"
 
-    # Remove CLI
-    rm -f "${HOME}/.local/bin/cc-dice"
-    print_success "Removed CLI symlink"
+    # Remove CLI (both the agent-dice command and the cc-dice alias)
+    rm -f "${HOME}/.local/bin/agent-dice" "${HOME}/.local/bin/cc-dice"
+    print_success "Removed CLI symlinks"
 
     # Remove module symlink
     rm -f "$DICE_BASE/cc-dice.ts"
@@ -341,7 +342,7 @@ show_usage() {
     echo "Usage: ./install.sh [command]"
     echo ""
     echo "Commands:"
-    echo "  (default)     Install cc-dice"
+    echo "  (default)     Install agent-dice"
     echo "  uninstall     Remove installation"
     echo "  check         Verify installation"
     echo "  help          Show this help"
@@ -365,11 +366,11 @@ case "${1:-}" in
         if [ "$SCRIPT_DIR" = "$CLONE_DIR" ]; then
             print_warning "Symlinks point to $CLONE_DIR — do not delete it."
             print_info "Next steps:"
-            echo "  1. Register a slot:  cc-dice register my-slot --message 'Triggered!'"
+            echo "  1. Register a slot:  agent-dice register my-slot --message 'Triggered!'"
             echo "  2. Verify:           $CLONE_DIR/install.sh check"
         else
             print_info "Next steps:"
-            echo "  1. Register a slot:  cc-dice register my-slot --message 'Triggered!'"
+            echo "  1. Register a slot:  agent-dice register my-slot --message 'Triggered!'"
             echo "  2. Verify:           ./install.sh check"
         fi
         echo ""

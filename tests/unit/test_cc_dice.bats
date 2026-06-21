@@ -5,7 +5,7 @@
 
 BATS_TEST_DIRNAME="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
 PROJ_DIR="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-CLI="$PROJ_DIR/bin/cc-dice.ts"
+CLI="$PROJ_DIR/bin/agent-dice.ts"
 
 load '../test_helper/bats-support/load'
 load '../test_helper/bats-assert/load'
@@ -598,7 +598,7 @@ deploy_transcript() {
 @test "cli: help shows usage" {
     run bun "$CLI" help
     assert_success
-    assert_output --partial "Usage: cc-dice"
+    assert_output --partial "Usage: agent-dice"
     assert_output --partial "register"
     assert_output --partial "status"
 }
