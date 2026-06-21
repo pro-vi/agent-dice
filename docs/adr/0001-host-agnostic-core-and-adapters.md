@@ -1,10 +1,43 @@
 # ADR 0001: Host-agnostic dice core behind a provisional DiceHost contract
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-06-20 — validated by the Pi adapter; see Amendment)
 - **Date:** 2026-06-20
-- **Tickets:** PR #2; released in v0.2.0 (commit 33e80dc)
+- **Tickets:** PR #2 (v0.2.0, commit 33e80dc); Pi adapter on branch `feat/pi-adapter`
 - **Deciders:** provi; Claude Code; cross-model `/code-review`
 - **Supersedes:** —
+
+## Amendment (2026-06-20): validated by the Pi adapter
+
+The "a second host is actually built → finalize the contract" revisit trigger has
+**fired**. A Pi adapter (`src/adapters/pi/`, installed via `pi install`) now drives
+the engine with **zero changes to `src/core/` or `DiceHost`/`CoreCheckContext`** — the
+seam held. The contract is no longer provisional in the "untested against a real
+second host" sense.
+
+What the build confirmed:
+
+- **Both hedges paid off.** Lazy `getCurrentDepth` is served for free by Pi's
+  `turn_end.turnIndex` (no parse). Adapter-only resolution (D1) holds — Pi resolves
+  session via `ctx.sessionManager.getSessionId()` and depth from the cached turn index;
+  the engine touches neither.
+- **No interface change.** Storage, trigger (`agent_end`), and render
+  (`pi.sendMessage`) all mapped onto the existing primitives.
+
+Deltas — documentation, not contract:
+
+- **Depth unit differs.** Pi counts turns (`turnIndex`); Claude counts exchanges. Both
+  monotonic; `accumulationRate` defaults are Claude-tuned → per-host calibration is a
+  slot-doc concern, not a `contracts.ts` change.
+- **Render channel is adapter-owned** (as designed): Pi surfaces via `sendMessage`
+  (`content` = text, `display` = boolean UI flag) vs Claude's stderr + exit 2. The U1
+  probe caught that the published Pi `CustomMessage.display` is a boolean, not the
+  string the `badlogic/pi-mono` snapshot implied — an adapter fix, not a contract one.
+- **No in-session session-start on Codex** (a future adapter must synthesize one). Pi
+  has `session_start`, so this is moot for Pi.
+
+The contract is validated for Claude + Pi. It may still evolve for a host with a
+fundamentally different lifecycle (e.g. Codex's hook-process model) — that remains a
+revisit trigger.
 
 ## Context
 
