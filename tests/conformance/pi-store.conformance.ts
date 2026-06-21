@@ -1,0 +1,132 @@
+/**
+ * Pi adapter storage conformance — proves the node:fs store matches the Claude
+ * file-store formats byte-for-byte (R3 / C3 parity), so the on-disk contract is
+ * identical across hosts. Runs under the Bun runner (node:fs works there).
+ */
+
+import { type Check, assert, assertEqual, withTempBase } from "./harness";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import {
+  registerSlot,
+  unregisterSlot,
+  getSlot,
+  listSlots,
+  loadSlots,
+  saveState,
+  loadState,
+  clearState,
+  getStateFile,
+  hasCooldown,
+  markTriggered,
+  clearCooldown,
+} from "../../src/adapters/pi/store";
+import { createPiHost, piContext } from "../../src/adapters/pi/host";
+import * as engine from "../../src/core/engine";
+import { SLOT_DEFAULTS as PI_DEFAULTS } from "../../src/adapters/pi/store";
+import { SLOT_DEFAULTS as CLAUDE_DEFAULTS } from "../../src/registry";
+
+export const checks: Check[] = [
+  {
+    name: "pi-store: register → slots.json at <base>, keyed by name, defaults applied",
+    fn: () =>
+      withTempBase(async (base) => {
+        const cfg = registerSlot({ name: "p1", die: 20, target: 20, onTrigger: { message: "m" } });
+        assert(existsSync(join(base, "slots.json")), "slots.json at <base>/slots.json");
+        assert("p1" in loadSlots(), "slot keyed by name");
+        assertEqual(cfg.type, "accumulator", "default type applied");
+        assertEqual((await getSlot("p1"))?.name, "p1", "getSlot returns it");
+        assertEqual((await listSlots()).length, 1, "listSlots includes it");
+      }),
+  },
+  {
+    name: "pi-store: state file = <base>/state/{slot}-{session}.json with DiceState fields",
+    fn: () =>
+      withTempBase(async (base) => {
+        await saveState("p1", "sessA", { depth_at_last_trigger: 5, last_reset: "2026-01-01T00:00:00.000Z" });
+        const expected = join(base, "state", "p1-sessA.json");
+        assert(existsSync(expected), "state file at the Claude-identical path");
+        assertEqual(getStateFile("p1", "sessA"), expected, "getStateFile path matches");
+        assertEqual((await loadState("p1", "sessA")).depth_at_last_trigger, 5, "depth persisted");
+      }),
+  },
+  {
+    name: "pi-store: cooldown marker = <base>/state/triggered-{slot}-{session}",
+    fn: () =>
+      withTempBase(async (base) => {
+        assert(!(await hasCooldown("p1", "sessA")), "no marker initially");
+        await markTriggered("p1", "sessA");
+        assert(existsSync(join(base, "state", "triggered-p1-sessA")), "marker at the Claude-identical path");
+        assert(await hasCooldown("p1", "sessA"), "hasCooldown true");
+        clearCooldown("p1", "sessA");
+        assert(!(await hasCooldown("p1", "sessA")), "clearCooldown removes it");
+      }),
+  },
+  {
+    name: "pi-store: corrupted slots.json / state fall back (registry → {}, state → default)",
+    fn: () =>
+      withTempBase(async (base) => {
+        await Bun.write(join(base, "slots.json"), "{ not : json ]");
+        assertEqual(loadSlots(), {}, "corrupted registry → {}");
+        const { mkdirSync, writeFileSync } = await import("node:fs");
+        mkdirSync(join(base, "state"), { recursive: true });
+        writeFileSync(join(base, "state", "p1-sessA.json"), "}}nope{{");
+        assertEqual((await loadState("p1", "sessA")).depth_at_last_trigger, 0, "corrupted state → depth 0");
+      }),
+  },
+  {
+    name: "pi-store: sentinel -1 round-trips; clearState resets to 0; unregister removes slot",
+    fn: () =>
+      withTempBase(async () => {
+        await saveState("p1", "sessA", { depth_at_last_trigger: -1, last_reset: "t" });
+        assertEqual((await loadState("p1", "sessA")).depth_at_last_trigger, -1, "sentinel -1 round-trips");
+        await clearState("p1", "sessA");
+        assertEqual((await loadState("p1", "sessA")).depth_at_last_trigger, 0, "clearState → 0");
+        registerSlot({ name: "p2", die: 6, target: 6, onTrigger: { message: "m" } });
+        assert(unregisterSlot("p2"), "unregister returns true");
+        assertEqual(await getSlot("p2"), null, "slot gone after unregister");
+      }),
+  },
+  {
+    name: "pi-host: engine.checkAllSlots runs through createPiHost + node:fs store (trigger + cooldown)",
+    fn: () =>
+      withTempBase(async () => {
+        registerSlot({ name: "t", die: 1, target: 1, targetMode: "exact", type: "single", onTrigger: { message: "go" } });
+        const results = await engine.checkAllSlots(createPiHost(), piContext("sess", 0));
+        const r = results.find((x) => x.slotName === "t");
+        assert(r?.triggered === true, "d1/target1 single triggers through the Pi host");
+        assert(await hasCooldown("t", "sess"), "trigger wrote a cooldown marker via the node:fs store");
+      }),
+  },
+  {
+    name: "pi-store: SLOT_DEFAULTS stays in sync with the Claude registry (drift guard — review #6)",
+    fn: () => {
+      const pi = PI_DEFAULTS as Record<string, unknown>;
+      const claude = CLAUDE_DEFAULTS as Record<string, unknown>;
+      const keys = [...new Set([...Object.keys(pi), ...Object.keys(claude)])].sort();
+      for (const k of keys) {
+        assertEqual(pi[k], claude[k], `SLOT_DEFAULTS.${k} differs between Pi store and Claude registry`);
+      }
+    },
+  },
+  {
+    name: "pi-store: a dotted Pi session id is accepted; slot names stay strict (review #5)",
+    fn: () =>
+      withTempBase(async (base) => {
+        await saveState("s1", "abc.def-1", { depth_at_last_trigger: 2, last_reset: "t" });
+        assert(existsSync(join(base, "state", "s1-abc.def-1.json")), "dotted session id is allowed");
+        assertEqual((await loadState("s1", "abc.def-1")).depth_at_last_trigger, 2, "round-trips under dotted session");
+      }),
+  },
+  {
+    name: "pi-host: accumulator depth flows from piContext through the engine",
+    fn: () =>
+      withTempBase(async () => {
+        registerSlot({ name: "acc", die: 20, target: 20, type: "accumulator", accumulationRate: 7, onTrigger: { message: "m" } });
+        await saveState("acc", "sess", { depth_at_last_trigger: 0, last_reset: "t" });
+        const r = await engine.getSlotStatus(createPiHost(), "acc", piContext("sess", 14));
+        assertEqual(r?.diceCount, 2, "depth 14 / rate 7 → 2 dice via the Pi host");
+        assertEqual(r?.currentDepth, 14, "currentDepth surfaced from piContext");
+      }),
+  },
+];

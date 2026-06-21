@@ -1,10 +1,52 @@
 # ADR 0001: Host-agnostic dice core behind a provisional DiceHost contract
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-06-20 — validated by the Pi adapter; see Amendment)
 - **Date:** 2026-06-20
-- **Tickets:** PR #2; released in v0.2.0 (commit 33e80dc)
+- **Tickets:** PR #2 (v0.2.0, commit 33e80dc); Pi adapter on branch `feat/pi-adapter`
 - **Deciders:** provi; Claude Code; cross-model `/code-review`
 - **Supersedes:** —
+
+## Amendment (2026-06-20): validated by the Pi adapter
+
+The "a second host is actually built → finalize the contract" revisit trigger has
+**fired**. A Pi adapter (`src/adapters/pi/`, installed via `pi install`) now drives
+the engine with **zero changes to `src/core/` or `DiceHost`/`CoreCheckContext`** — the
+seam held. The contract is no longer provisional in the "untested against a real
+second host" sense.
+
+What the build confirmed:
+
+- **Both hedges paid off.** Lazy `getCurrentDepth` and adapter-only resolution (D1)
+  hold — Pi resolves session via `ctx.sessionManager.getSessionId()` and depth via the
+  adapter; the engine touches neither.
+- **No interface change.** Storage, trigger (`agent_end`), and render
+  (`pi.sendMessage`) all mapped onto the existing primitives.
+
+Deltas — documentation/adapter, not contract:
+
+- **Depth is the same unit on both hosts.** Pi depth = count of user-message entries
+  from `sessionManager.getEntries()` (session-cumulative), the exact analog of the
+  Claude adapter's `countExchanges` (`type==="user" && !toolUseResult`). So
+  `accumulationRate` needs **no** per-host recalibration. (Code review correction: the
+  first cut used `turn_end.turnIndex`, which Pi resets to 0 each prompt
+  — `agent-session.ts:615` — silently zeroing the accumulator; fixed before merge.)
+- **Session lifecycle is `reason`-gated.** `clearOnSessionStart` clears only on
+  `SessionStartEvent.reason ∈ {new, startup}`, not `resume`/`reload`/`fork`
+  (continuations of the same logical session). Codex would have no in-session
+  session-start event and must synthesize one.
+- **Render channel is adapter-owned** (as designed): Pi surfaces via `sendMessage`
+  (`content` = text, `display` = boolean UI flag) vs Claude's stderr + exit 2. The U1
+  probe caught that the published Pi `CustomMessage.display` is a boolean, not the
+  string the `badlogic/pi-mono` snapshot implied — an adapter fix, not a contract one.
+- **Delivery is best-effort (at-most-once).** The engine commits cooldown + reset at
+  roll time, but the Pi nudge rides the in-memory `nextTurn` queue, which is dropped if
+  the session ends before the next prompt — so a trigger can be spent without being
+  shown. Acceptable for a probabilistic nudge; documented rather than engineered around
+  (forcing delivery via `triggerTurn` risks re-trigger loops for no-cooldown slots).
+
+The contract is validated for Claude + Pi. It may still evolve for a host with a
+fundamentally different lifecycle (e.g. Codex's hook-process model) — that remains a
+revisit trigger.
 
 ## Context
 

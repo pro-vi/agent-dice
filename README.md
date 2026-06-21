@@ -171,12 +171,38 @@ import { registerSlot, checkAllSlots } from "./src/index";
 
 ## Architecture
 
-cc-dice is a thin Claude Code **facade over a reusable, host-agnostic dice core**.
+cc-dice is a thin host **facade over a reusable, host-agnostic dice core**.
 Scheduling (dice counts, shared rolls, cooldowns, sentinel calibration) lives in
-`src/core/`; everything Claude-specific (transcripts, sessions, file storage, hook
-output) lives in `src/adapters/`. The public API in `src/index.ts` is unchanged.
-A second host could implement the `DiceHost` contract to reuse the core — that's
-future work; the Claude Code adapter is the only one that ships today.
+`src/core/`; everything host-specific (transcripts/sessions, file storage, hook or
+event output) lives in `src/adapters/`. The Claude Code public API in `src/index.ts`
+is unchanged. The same engine now drives **two hosts** via the `DiceHost` contract:
+Claude Code (default) and **Pi** (`src/adapters/pi/`, see below). A Codex adapter is
+researched but not yet built.
+
+## Use with Pi
+
+cc-dice also ships as a [Pi](https://github.com/badlogic/pi-mono) extension — the
+same core engine behind a Pi adapter.
+
+```bash
+pi install git:github.com/pro-vi/cc-dice
+```
+
+Manage slots with the `/dice` command (mirrors the CLI):
+
+```text
+/dice register refactor --die 20 --target 20 --message "Cast /refactor and review."
+/dice list | status <name> | roll <name> | reset <name> | clear <name>
+```
+
+The extension rolls on each `agent_end` (Pi's analog of Claude's Stop) and injects a
+nudge when a slot triggers. State lives under `~/.pi/agent/dice/` (or `CC_DICE_BASE`).
+
+**Depth & delivery:** Pi measures depth the same way as Claude — the count of user
+messages in the session (`sessionManager.getEntries()`, the analog of Claude's
+transcript exchanges) — so `accumulationRate` defaults carry over unchanged. Trigger
+nudges are best-effort (at-most-once): cooldown/reset commit at roll time, but a nudge
+can be dropped if the session ends before Pi's next turn.
 
 ## Contributing
 

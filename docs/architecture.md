@@ -48,10 +48,14 @@ engine never touches a transcript or a session env var.
 A boundary conformance test (C8) fails if anything under `src/core/**` imports a
 Claude/host module, a node builtin, `Bun`, or `process.env`.
 
-**Reusability:** a second host (e.g. Pi or another agent runtime) could implement
-`DiceHost` to reuse the engine without importing any Claude transcript/session
-helpers. That is **future work — no such adapter ships today**; cc-dice remains the
-Claude Code distribution and the only shipped adapter.
+**Reusability:** the engine now drives a **second host**. The Pi adapter under
+`src/adapters/pi/` (installed via `pi install git:github.com/pro-vi/cc-dice`)
+implements `DiceHost` without importing any Claude transcript/session helpers —
+validating the seam with **zero changes to core**. Pi rolls on `agent_end` (its
+analog of Claude's Stop), caches depth from `turn_end`'s `turnIndex` (no transcript
+parse), persists state via `node:fs` under `~/.pi/agent/dice/`, and injects nudges
+via `pi.sendMessage`. A Codex adapter is researched but not yet built. cc-dice
+remains the Claude Code distribution; Pi is an additional host on the same core.
 
 ---
 
@@ -218,6 +222,11 @@ cc-dice/
     adapters/
       claude-code.ts        Builds DiceHost from file stores + resolves session/depth
       claude-renderer.ts    Trigger-message rendering (placeholders + dice flavor)
+      pi/                   Pi extension adapter (second host)
+        index.ts            Extension entry: turn_end / session_start / agent_end wiring
+        host.ts             createPiHost (DiceHost) + piContext (CoreCheckContext)
+        store.ts            node:fs storage (Claude-identical formats)
+        commands.ts         /dice slash command
     registry.ts             Slot CRUD + file persistence
     roll.ts                 Pure rolling (injectable RNG) + target checking + probability
     accumulator.ts          Claude/file wrapper over core/accumulator
