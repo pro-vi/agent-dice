@@ -30,7 +30,7 @@ function failOpen(where: string, err: unknown): void {
 export default function ccDice(pi: ExtensionAPI): void {
   const host = createPiHost();
 
-  // Config UX: agent-facing tools (natural language → configure_dice) + the /dice
+  // Config UX: agent-facing tools (natural language → register_dice) + the /dice
   // slash command for humans who prefer typing it.
   registerDiceTools(pi);
   registerDiceCommands(pi);
