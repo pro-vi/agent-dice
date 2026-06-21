@@ -195,12 +195,12 @@ pi install git:github.com/pro-vi/agent-dice
 ```
 
 **Configure by talking to the agent (recommended).** The extension registers
-`configure_dice` / `list_dice` / `remove_dice` tools, so you just describe intent —
+`register_dice` / `list_dice` / `remove_dice` tools, so you just describe intent —
 no flags to type:
 
 > "nudge me to refactor as the session gets long, and about 5% of turns remind me to get a second opinion"
 
-The agent calls `configure_dice` and the slots are created.
+The agent calls `register_dice` and the slots are created.
 
 **Or drive it yourself** with the `/dice` command (mirrors the CLI):
 

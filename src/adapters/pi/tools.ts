@@ -49,7 +49,7 @@ type RemoveInput = Static<typeof RemoveParams>;
 
 export function registerDiceTools(pi: ExtensionAPI): void {
   pi.registerTool({
-    name: "configure_dice",
+    name: "register_dice",
     label: "Configure dice",
     description:
       "Register or update a probabilistic dice trigger ('slot'). On each agent turn the slot rolls; when it hits its target a short nudge is injected. Use type 'accumulator' to make a nudge more likely the longer the conversation runs, or 'single'/'fixed' for flat per-turn odds. Call this when the user asks to be reminded/nudged about something on a chance basis.",
