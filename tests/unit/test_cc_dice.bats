@@ -1296,3 +1296,14 @@ EOF
     assert_success
     assert_output --partial "0 failed"
 }
+
+# ============================================================================
+# Codex hook probe (U5): the codex-stop / codex-session-start scripts honor the
+# exit-2/stderr nudge contract and fail open. Model-free; bun-only.
+# ============================================================================
+
+@test "codex: hook scripts honor the exit-2/stderr nudge contract" {
+    run bash "$PROJ_DIR/tests/codex-hook-probe.sh"
+    assert_success
+    assert_output --partial "PASS: Codex hook scripts"
+}
