@@ -40,20 +40,27 @@ export function codexRoot(): string {
 }
 
 /**
- * Base dir for Codex dice data. Explicit `AGENT_DICE_BASE`/`CC_DICE_BASE` override
- * wins (opt-in sharing with another host); otherwise `${codexRoot()}/dice`.
+ * Base dir for Codex dice data. A NON-EMPTY `AGENT_DICE_BASE`/`CC_DICE_BASE`
+ * override wins (opt-in sharing with another host); otherwise `${codexRoot()}/dice`.
+ *
+ * Uses `||`, NOT `??`: the reused Claude store (`getBaseDir`, src/registry.ts:18)
+ * treats an empty string as "unset" and falls back to `~/.claude/dice`. Selecting
+ * with `??` would let `AGENT_DICE_BASE=""` escape into Claude's store — a
+ * host-isolation leak — so an empty override must fall through here too.
  */
 export function codexBaseDir(): string {
-  return process.env.AGENT_DICE_BASE ?? process.env.CC_DICE_BASE ?? join(codexRoot(), "dice");
+  return process.env.AGENT_DICE_BASE || process.env.CC_DICE_BASE || join(codexRoot(), "dice");
 }
 
 /**
- * Point the shared file stores at the Codex base. Idempotent and override-safe:
- * `??=` leaves an explicitly-set `AGENT_DICE_BASE` untouched. Called by
+ * Point the shared file stores at the Codex base. Override-safe: a non-empty
+ * `AGENT_DICE_BASE` is left untouched (explicit sharing); an unset OR EMPTY value
+ * is assigned the resolved Codex base — matching codexBaseDir's non-empty
+ * selection so `AGENT_DICE_BASE=""` can't leak into Claude's store. Called by
  * `createCodexHost()` so no entry point (hook/CLI) has to repeat the shim.
  */
 export function codexBootstrap(): void {
-  process.env.AGENT_DICE_BASE ??= codexBaseDir();
+  if (!process.env.AGENT_DICE_BASE) process.env.AGENT_DICE_BASE = codexBaseDir();
 }
 
 /**

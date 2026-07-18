@@ -36,17 +36,29 @@ export const checks: Check[] = [
     },
   },
   {
-    name: "C9: Codex now ships as the third host — architecture.md + README document it alongside Claude and Pi",
+    name: "C9: Codex is documented as a SHIPPED host — positive install language, no 'not yet built' hedge",
     fn: () => {
-      // Codex shipped as a hook-based host (the Claude twin), so the docs must
-      // document it. architecture.md is the host-of-record: it must name all three
-      // shipped hosts; README must mention Codex so installers can find it.
+      // Mere presence of the word "codex" is too weak: pristine main satisfied that
+      // while saying Codex was "researched but not yet built". This guard requires
+      // POSITIVE shipped/install language and REJECTS negated/future claims, so it
+      // fails on the pre-ship docs and only passes once Codex actually ships.
       const arch = read("docs/architecture.md").toLowerCase();
       for (const host of ["claude", "pi", "codex"]) {
         assert(arch.includes(host), `architecture.md should document the ${host} host (three hosts now ship)`);
       }
-      const readme = read("README.md").toLowerCase();
-      assert(readme.includes("codex"), "README should mention Codex so users can find the install path");
+      // README must carry the real install path — only true once it ships.
+      const readme = read("README.md");
+      assert(/\.\/install\.sh\s+codex/.test(readme), "README should document the `./install.sh codex` install path");
+
+      // No doc may hedge Codex as unbuilt/future on a line that mentions it.
+      const future = /\b(not\s+(yet\s+)?built|researched\s+but\s+not|not\s+(yet\s+)?shipped|future\s+work|planned|unbuilt)\b/i;
+      for (const p of ["README.md", "docs/architecture.md", "CLAUDE.md"]) {
+        for (const line of read(p).split("\n")) {
+          if (/\bcodex\b/i.test(line) && future.test(line)) {
+            throw new Error(`${p} still hedges Codex as unbuilt/future: "${line.trim()}"`);
+          }
+        }
+      }
     },
   },
 ];

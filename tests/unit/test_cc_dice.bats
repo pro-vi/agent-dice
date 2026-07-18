@@ -1324,14 +1324,71 @@ codex_setup() {
     codex_setup
     run bash "$PROJ_DIR/install.sh" codex
     assert_success
-    assert_output --partial "Registered Stop hook"
-    assert_output --partial "Registered SessionStart hook"
+    assert_output --partial "Registered Stop + SessionStart"
     # both events present, each carrying the 10s timeout
     assert [ "$(jq '.hooks.Stop[0].hooks[0].timeout' "$CODEX_HOME/hooks.json")" = "10" ]
     assert [ "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CODEX_HOME/hooks.json")" != "null" ]
     run bash "$PROJ_DIR/install.sh" check codex
     assert_success
     assert_output --partial "Status: OK"
+}
+
+@test "codex reconcile: repairs drifted timeout in place and collapses duplicates" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    # drift the timeout and duplicate the owned Stop entry
+    jq '.hooks.Stop[0].hooks[0].timeout = 99 | .hooks.Stop += [.hooks.Stop[0]]' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command | test("codex-stop"))] | length' "$CODEX_HOME/hooks.json")" = "1" ]
+    assert [ "$(jq '.hooks.Stop[0].hooks[0].timeout' "$CODEX_HOME/hooks.json")" = "10" ]
+}
+
+@test "codex reconcile: preserves unrelated entry ordering across install" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop = ([{"hooks":[{"type":"command","command":"FIRST"}]}] + .hooks.Stop + [{"hooks":[{"type":"command","command":"LAST"}]}])' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ "$(jq -r '.hooks.Stop[0].hooks[0].command' "$CODEX_HOME/hooks.json")" = "FIRST" ]
+    assert [ "$(jq -r '.hooks.Stop[-1].hooks[0].command' "$CODEX_HOME/hooks.json")" = "LAST" ]
+}
+
+@test "codex install: refuses to clobber an unrelated regular file at the CLI path" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin"
+    echo "REAL USER BINARY" > "$HOME/.local/bin/agent-dice"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(cat "$HOME/.local/bin/agent-dice")" = "REAL USER BINARY" ]
+    # and uninstall must not delete it either
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ "$(cat "$HOME/.local/bin/agent-dice")" = "REAL USER BINARY" ]
+}
+
+@test "codex reconcile: leaves malformed hooks.json untouched and aborts" {
+    codex_setup
+    printf 'NOT JSON{' > "$CODEX_HOME/hooks.json"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(cat "$CODEX_HOME/hooks.json")" = "NOT JSON{" ]
+}
+
+@test "codex check: reports errors (nonzero) for a nonfunctional install" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    echo '{}' > "$CODEX_HOME/dice/slots.json"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1   # data kept, hooks gone
+    run bash "$PROJ_DIR/install.sh" check codex
+    assert_failure
+    assert_output --partial "error"
+}
+
+@test "codex host: empty AGENT_DICE_BASE resolves to the Codex base, not Claude's store" {
+    export CODEX_HOME="$CC_DICE_BASE/ch"
+    run env -u CC_DICE_BASE AGENT_DICE_BASE="" bun -e 'import { codexBaseDir } from "'"$PROJ_DIR"'/src/adapters/codex/host"; process.stdout.write(codexBaseDir())'
+    assert_success
+    assert_output "$CC_DICE_BASE/ch/dice"
 }
 
 @test "codex install: re-install is byte-for-byte idempotent (no trust churn)" {

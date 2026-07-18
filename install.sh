@@ -324,12 +324,18 @@ uninstall() {
     rm -f "$HOOKS_DIR/dice-session-start.ts"
     print_success "Removed hooks"
 
-    # Remove CLI (both the agent-dice command and the cc-dice alias)
-    rm -f "${HOME}/.local/bin/agent-dice" "${HOME}/.local/bin/cc-dice"
-    print_success "Removed CLI symlinks"
-
-    # Remove module symlink
+    # Remove module symlink (Claude's own marker)
     rm -f "$DICE_BASE/cc-dice.ts"
+
+    # Shared CLI: remove only when no other host remains (Codex absent), and only
+    # our own symlink — never an unrelated file. Symmetric with uninstall_codex.
+    if [ -L "$CODEX_DICE_BASE/codex-stop.ts" ] || [ -e "$CODEX_DICE_BASE/codex-stop.ts" ]; then
+        print_info "Kept shared CLI (Codex host still installed)"
+    else
+        safe_unlink "${HOME}/.local/bin/agent-dice" "agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "agent-dice.ts"
+        print_success "Removed CLI symlinks"
+    fi
 
     echo ""
     read -p "Remove dice data ($DICE_BASE)? [y/N] " -n 1 -r
@@ -346,82 +352,111 @@ uninstall() {
 
 # ============================================================================
 # Codex host: hook registration lives in $CODEX_ROOT/hooks.json (user layer).
-# The block shape matches Claude's settings.json hooks block, but registration
-# is IDEMPOTENT (byte-for-byte no-op when the command is unchanged) so a re-run
-# never churns Codex's index-sensitive hook trust.
+# The block shape matches Claude's settings.json hooks block. A single reconciler
+# drives hooks.json toward a canonical desired state (one owned entry present, or
+# absent), transactionally — so registration is idempotent (byte-for-byte no-op
+# when already correct, never churning Codex's index-sensitive hook trust) and
+# unrelated entries + their order are always conserved.
 # ============================================================================
 
-# Remove any hook entry whose command matches $2 from event $1 in hooks.json.
-unregister_codex_hook() {
-    local event_name="$1"
-    local grep_pattern="$2"
+# Canonical command string for a hook script path: `bun '<path>'`.
+codex_hook_cmd() { echo "bun $(jq -nr --arg p "$1" '$p | @sh')"; }
 
-    [ -f "$CODEX_HOOKS_JSON" ] || return 0
-    grep -q "$grep_pattern" "$CODEX_HOOKS_JSON" 2>/dev/null || return 0
-
-    cp "$CODEX_HOOKS_JSON" "$CODEX_HOOKS_JSON.bak"
-    local tmp_file
-    tmp_file=$(mktemp)
-    if ! jq --arg event "$event_name" --arg pattern "$grep_pattern" '
-        if .hooks[$event] then
-            .hooks[$event] |= (
-                map(.hooks |= map(select((.command | tostring | contains($pattern)) | not)))
-                | map(select((.hooks | length) > 0))
-            )
-        else . end
-    ' "$CODEX_HOOKS_JSON" > "$tmp_file"; then
-        rm -f "$tmp_file"; cp "$CODEX_HOOKS_JSON.bak" "$CODEX_HOOKS_JSON"; return 1
+# Create $2 -> $1 only if the path is safe to OWN: absent, or an existing symlink
+# whose target basename is $3. Refuse to clobber a regular file or an unrelated
+# symlink (never destroy something we didn't create). Returns 1 on conflict.
+safe_link() {
+    local target="$1" link="$2" owned="$3"
+    if [ -L "$link" ]; then
+        local cur; cur="$(readlink "$link")"
+        if [ "$(basename "$cur")" != "$owned" ]; then
+            print_error "Refusing to overwrite unrelated symlink: $link -> $cur"; return 1
+        fi
+    elif [ -e "$link" ]; then
+        print_error "Refusing to overwrite existing non-symlink file: $link"; return 1
     fi
-    if ! jq empty "$tmp_file" 2>/dev/null || [ ! -s "$tmp_file" ]; then
-        rm -f "$tmp_file"; cp "$CODEX_HOOKS_JSON.bak" "$CODEX_HOOKS_JSON"; return 1
-    fi
-    mv "$tmp_file" "$CODEX_HOOKS_JSON"
+    ln -sf "$target" "$link"
 }
 
-# register_codex_hook <event> <hook_path> <grep_pattern>
-register_codex_hook() {
-    local event_name="$1"
-    local hook_path="$2"
-    local grep_pattern="$3"
-    local timeout=10
+# Remove $1 only if it is a symlink whose target basename is $2 (ours). Leave
+# unrelated files/symlinks in place. Always returns 0.
+safe_unlink() {
+    local link="$1" owned="$2"
+    if [ -L "$link" ]; then
+        local cur; cur="$(readlink "$link")"
+        if [ "$(basename "$cur")" = "$owned" ]; then rm -f "$link"; return 0; fi
+        print_warning "Left unrelated symlink in place: $link -> $cur"
+    elif [ -e "$link" ]; then
+        print_warning "Left non-symlink file in place: $link"
+    fi
+    return 0
+}
+
+# reconcile_codex_hook <event> <hook_path> <present|absent>
+#
+# Drive hooks.json from its observed state to the desired state for ONE owned
+# entry. Ownership is EXACT — a group whose hooks[] contains our canonical command
+# (never a basename substring). present → exactly one canonical
+# {type,command,timeout} owned group, repaired in place at the first owned
+# position (or appended), duplicates collapsed; absent → all owned groups removed.
+# Unrelated entries and their order are conserved. A correct file is left
+# byte-for-byte unchanged (idempotent, no trust churn). On unreadable or
+# unwritable JSON, hooks.json is left untouched and it returns 1.
+reconcile_codex_hook() {
+    local event="$1" hook_path="$2" state="$3"
+
+    # Nothing to remove from a file that doesn't exist.
+    if [ "$state" = "absent" ] && [ ! -f "$CODEX_HOOKS_JSON" ]; then return 0; fi
 
     mkdir -p "$CODEX_ROOT"
-    if [ ! -f "$CODEX_HOOKS_JSON" ]; then
-        echo '{"hooks":{}}' > "$CODEX_HOOKS_JSON"
+    [ -f "$CODEX_HOOKS_JSON" ] || echo '{"hooks":{}}' > "$CODEX_HOOKS_JSON"
+    if ! jq empty "$CODEX_HOOKS_JSON" 2>/dev/null; then
+        print_error "hooks.json is not valid JSON — leaving it untouched"; return 1
     fi
 
-    local hook_cmd
-    hook_cmd="bun $(jq -nr --arg p "$hook_path" '$p | @sh')"
-
-    # Idempotent: if this exact command is already registered, do NOT touch the
-    # file — byte-for-byte stable, so Codex hook trust is preserved.
-    if jq -e --arg event "$event_name" --arg cmd "$hook_cmd" '
-        [ .hooks[$event][]?.hooks[]?.command ] | any(. == $cmd)
-    ' "$CODEX_HOOKS_JSON" >/dev/null 2>&1; then
-        print_info "$event_name hook already registered (unchanged)"
-        return 0
+    local cmd tmp
+    cmd="$(codex_hook_cmd "$hook_path")"
+    tmp=$(mktemp)
+    if ! jq --arg e "$event" --arg cmd "$cmd" --arg state "$state" --argjson to 10 '
+        def canon: {hooks: [{type: "command", command: $cmd, timeout: $to}]};
+        .hooks[$e] = (
+            (.hooks[$e] // []) as $groups
+            | (reduce $groups[] as $g ({emitted: false, out: []};
+                if (any($g.hooks[]?; .command == $cmd))                 # owned group (exact)
+                then (if ($state == "present" and (.emitted | not))
+                      then {emitted: true, out: (.out + [canon])}       # first owned → canonical, in place
+                      else {emitted: true, out: .out} end)              # drop (absent, or duplicate)
+                else {emitted: .emitted, out: (.out + [$g])} end)       # unrelated → preserve + order
+              ) as $r
+            | if ($state == "present" and ($r.emitted | not))
+              then ($r.out + [canon]) else $r.out end                   # append when none owned
+        )
+        | if ((.hooks[$e] | length) == 0) then del(.hooks[$e]) else . end
+    ' "$CODEX_HOOKS_JSON" > "$tmp"; then
+        rm -f "$tmp"; print_error "Failed to reconcile hooks.json (left untouched)"; return 1
     fi
-
-    # Command changed (e.g. repo moved) — drop the stale entry, then append the
-    # new one. Trust re-verification on a genuinely changed command is expected.
-    unregister_codex_hook "$event_name" "$grep_pattern" || true
-
-    cp "$CODEX_HOOKS_JSON" "$CODEX_HOOKS_JSON.bak"
-    local hook_obj tmp_file
-    hook_obj=$(jq -n --arg cmd "$hook_cmd" --argjson to "$timeout" '{hooks: [{type: "command", command: $cmd, timeout: $to}]}')
-    tmp_file=$(mktemp)
-    if ! jq --arg event "$event_name" --argjson hook "$hook_obj" '
-        .hooks[$event] = ((.hooks[$event] // []) + [$hook])
-    ' "$CODEX_HOOKS_JSON" > "$tmp_file"; then
-        rm -f "$tmp_file"; print_error "Failed to update hooks.json (restored from backup)"; cp "$CODEX_HOOKS_JSON.bak" "$CODEX_HOOKS_JSON"; return 1
+    if ! jq empty "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"; print_error "reconcile produced invalid JSON (left untouched)"; return 1
     fi
-    if ! jq empty "$tmp_file" 2>/dev/null || [ ! -s "$tmp_file" ]; then
-        rm -f "$tmp_file"; print_error "jq produced invalid JSON (restored from backup)"; cp "$CODEX_HOOKS_JSON.bak" "$CODEX_HOOKS_JSON"; return 1
+    if cmp -s "$tmp" "$CODEX_HOOKS_JSON"; then
+        rm -f "$tmp"; return 0                                          # already canonical — no write, no trust churn
     fi
-    mv "$tmp_file" "$CODEX_HOOKS_JSON"
-    print_success "Registered $event_name hook in hooks.json"
+    mv "$tmp" "$CODEX_HOOKS_JSON"
+    return 0
 }
 
+# Structural registration check: a canonical command hook object exists for $1.
+codex_hook_registered() {
+    local event="$1" hook_path="$2" cmd
+    [ -f "$CODEX_HOOKS_JSON" ] || return 1
+    cmd="$(codex_hook_cmd "$hook_path")"
+    jq -e --arg e "$event" --arg cmd "$cmd" \
+        '[.hooks[$e][]?.hooks[]? | select(.type == "command" and .command == $cmd)] | length > 0' \
+        "$CODEX_HOOKS_JSON" >/dev/null 2>&1
+}
+
+# Install hook + CLI symlinks, ownership-safe. Returns 1 on a conflicting path so
+# the caller aborts BEFORE touching hooks.json.
 install_codex() {
     print_info "Installing agent-dice for Codex..."
 
@@ -431,41 +466,48 @@ install_codex() {
     # Symlink hook scripts under the dice base (NOT $CODEX_ROOT/hooks, which may be
     # a user-owned dir). ESM resolves the scripts' `../src/**` imports against the
     # real repo path, so no module symlink is needed.
-    ln -sf "$SCRIPT_DIR/hooks/codex-stop.ts" "$CODEX_DICE_BASE/codex-stop.ts"
-    ln -sf "$SCRIPT_DIR/hooks/codex-session-start.ts" "$CODEX_DICE_BASE/codex-session-start.ts"
+    safe_link "$SCRIPT_DIR/hooks/codex-stop.ts" "$CODEX_DICE_BASE/codex-stop.ts" "codex-stop.ts" || return 1
+    safe_link "$SCRIPT_DIR/hooks/codex-session-start.ts" "$CODEX_DICE_BASE/codex-session-start.ts" "codex-session-start.ts" || return 1
     print_success "Symlinked Codex hooks to $CODEX_DICE_BASE"
 
     local bin_dir="${HOME}/.local/bin"
     mkdir -p "$bin_dir"
-    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice"
-    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice"
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" "agent-dice.ts" || return 1
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" "agent-dice.ts" || return 1
     print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
 }
 
 register_codex_hooks() {
     echo ""
-    print_info "Registering Codex hooks in $CODEX_HOOKS_JSON..."
-    register_codex_hook "Stop" "$CODEX_DICE_BASE/codex-stop.ts" "codex-stop"
-    register_codex_hook "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts" "codex-session-start"
+    print_info "Reconciling Codex hooks in $CODEX_HOOKS_JSON..."
+    reconcile_codex_hook "Stop" "$CODEX_DICE_BASE/codex-stop.ts" present || return 1
+    reconcile_codex_hook "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts" present || return 1
+    print_success "Registered Stop + SessionStart hooks (canonical, idempotent)"
 }
 
 uninstall_codex() {
     local purge="${1:-}"
     print_info "Uninstalling agent-dice for Codex..."
 
-    unregister_codex_hook "Stop" "codex-stop" || true
-    unregister_codex_hook "SessionStart" "codex-session-start" || true
-    print_success "Unregistered Codex hooks"
+    # Reconcile hooks.json to owned-absent FIRST; gate script-symlink deletion on
+    # a confirmed successful reconcile (don't orphan a registration).
+    if reconcile_codex_hook "Stop" "$CODEX_DICE_BASE/codex-stop.ts" absent \
+        && reconcile_codex_hook "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts" absent; then
+        print_success "Unregistered Codex hooks"
+        safe_unlink "$CODEX_DICE_BASE/codex-stop.ts" "codex-stop.ts"
+        safe_unlink "$CODEX_DICE_BASE/codex-session-start.ts" "codex-session-start.ts"
+        print_success "Removed Codex hook symlinks"
+    else
+        print_error "hooks.json reconcile failed — left hook symlinks in place"
+    fi
 
-    rm -f "$CODEX_DICE_BASE/codex-stop.ts" "$CODEX_DICE_BASE/codex-session-start.ts"
-    print_success "Removed Codex hook symlinks"
-
-    # Remove the SHARED CLI only when no other host remains — i.e. the Claude
-    # module symlink is absent. Never touch Claude's hooks or settings.json.
+    # Remove the SHARED CLI only when no other host remains (Claude module symlink
+    # absent), and only OUR symlink — never an unrelated file.
     if [ -L "$DICE_BASE/cc-dice.ts" ] || [ -e "$DICE_BASE/cc-dice.ts" ]; then
         print_info "Kept shared CLI (Claude host still installed)"
     else
-        rm -f "${HOME}/.local/bin/agent-dice" "${HOME}/.local/bin/cc-dice"
+        safe_unlink "${HOME}/.local/bin/agent-dice" "agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "agent-dice.ts"
         print_success "Removed shared CLI symlinks (no host remains)"
     fi
 
@@ -479,6 +521,8 @@ uninstall_codex() {
     print_success "Codex uninstall complete"
 }
 
+# Verify the Codex install. Missing scripts/registration/CLI are ERRORS (a
+# nonfunctional install must not report OK); exits nonzero when any error is found.
 show_check_codex() {
     echo ""
     echo "agent-dice (Codex) Installation Check"
@@ -487,7 +531,7 @@ show_check_codex() {
     if [ ! -d "$CODEX_DICE_BASE" ] && [ ! -f "$CODEX_HOOKS_JSON" ]; then
         echo -e "  ${BLUE}Not installed.${NC} Run ${BLUE}./install.sh codex${NC} to install."
         echo ""
-        return 0
+        exit 0
     fi
 
     local errors=0
@@ -498,31 +542,31 @@ show_check_codex() {
         echo -e "  ${RED}err${NC} Dice base missing"; errors=$((errors + 1))
     fi
 
+    # Hook scripts must resolve to live targets.
     for hook in codex-stop codex-session-start; do
-        if [ -L "$CODEX_DICE_BASE/$hook.ts" ] && [ ! -e "$CODEX_DICE_BASE/$hook.ts" ]; then
-            echo -e "  ${RED}err${NC} $hook symlink broken (target missing)"; errors=$((errors + 1))
-        elif [ -e "$CODEX_DICE_BASE/$hook.ts" ]; then
+        if [ -e "$CODEX_DICE_BASE/$hook.ts" ]; then
             echo -e "  ${GREEN}ok${NC} $hook hook file"
         else
-            echo -e "  ${YELLOW}warn${NC} $hook not installed"
+            echo -e "  ${RED}err${NC} $hook hook missing or broken"; errors=$((errors + 1))
         fi
     done
 
-    if [ -f "$CODEX_HOOKS_JSON" ] && grep -q "codex-stop" "$CODEX_HOOKS_JSON" 2>/dev/null; then
+    # Structural registration (canonical command object), not a substring grep.
+    if codex_hook_registered "Stop" "$CODEX_DICE_BASE/codex-stop.ts"; then
         echo -e "  ${GREEN}ok${NC} Stop hook registered in hooks.json"
     else
-        echo -e "  ${YELLOW}warn${NC} Stop hook not registered in hooks.json"
+        echo -e "  ${RED}err${NC} Stop hook not registered (canonical object)"; errors=$((errors + 1))
     fi
-    if [ -f "$CODEX_HOOKS_JSON" ] && grep -q "codex-session-start" "$CODEX_HOOKS_JSON" 2>/dev/null; then
+    if codex_hook_registered "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts"; then
         echo -e "  ${GREEN}ok${NC} SessionStart hook registered in hooks.json"
     else
-        echo -e "  ${YELLOW}warn${NC} SessionStart hook not registered in hooks.json"
+        echo -e "  ${RED}err${NC} SessionStart hook not registered (canonical object)"; errors=$((errors + 1))
     fi
 
     if [ -L "${HOME}/.local/bin/agent-dice" ] && [ -e "${HOME}/.local/bin/agent-dice" ]; then
         echo -e "  ${GREEN}ok${NC} CLI symlink"
     else
-        echo -e "  ${YELLOW}warn${NC} CLI not symlinked"
+        echo -e "  ${RED}err${NC} CLI missing or broken"; errors=$((errors + 1))
     fi
 
     echo ""
@@ -532,11 +576,10 @@ show_check_codex() {
     echo ""
 
     if [ $errors -eq 0 ]; then
-        echo -e "${GREEN}Status: OK${NC}"
+        echo -e "${GREEN}Status: OK${NC}"; echo ""; exit 0
     else
-        echo -e "${RED}Status: $errors error(s)${NC}"
+        echo -e "${RED}Status: $errors error(s)${NC}"; echo ""; exit 1
     fi
-    echo ""
 }
 
 show_usage() {
@@ -585,8 +628,14 @@ case "${1:-}" in
             exit 1
         fi
         resolve_source_dir
-        install_codex
-        register_codex_hooks
+        if ! install_codex; then
+            print_error "Codex install aborted (conflicting path) — nothing registered."
+            exit 1
+        fi
+        if ! register_codex_hooks; then
+            print_error "Hook registration failed — hooks.json left untouched."
+            exit 1
+        fi
         echo ""
         print_success "Codex installation complete!"
         echo ""
