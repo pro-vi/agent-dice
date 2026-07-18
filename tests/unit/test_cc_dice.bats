@@ -1307,3 +1307,82 @@ EOF
     assert_success
     assert_output --partial "PASS: Codex hook scripts"
 }
+
+# ============================================================================
+# Codex installer (U4): sandboxed HOME + CODEX_HOME per test. Verifies hook
+# registration (with timeout), byte-for-byte idempotency (no trust churn),
+# data-safe host-scoped uninstall, coexistence with Claude, and custom CODEX_HOME.
+# ============================================================================
+
+codex_setup() {
+    command -v jq >/dev/null 2>&1 || skip "jq required for installer tests"
+    export CODEX_HOME="$CC_DICE_BASE/codex"
+    mkdir -p "$CODEX_HOME"
+}
+
+@test "codex install: registers Stop + SessionStart with timeout; check passes" {
+    codex_setup
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_success
+    assert_output --partial "Registered Stop hook"
+    assert_output --partial "Registered SessionStart hook"
+    # both events present, each carrying the 10s timeout
+    assert [ "$(jq '.hooks.Stop[0].hooks[0].timeout' "$CODEX_HOME/hooks.json")" = "10" ]
+    assert [ "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CODEX_HOME/hooks.json")" != "null" ]
+    run bash "$PROJ_DIR/install.sh" check codex
+    assert_success
+    assert_output --partial "Status: OK"
+}
+
+@test "codex install: re-install is byte-for-byte idempotent (no trust churn)" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    local h1 h2
+    h1=$(shasum "$CODEX_HOME/hooks.json" | awk '{print $1}')
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    h2=$(shasum "$CODEX_HOME/hooks.json" | awk '{print $1}')
+    assert_equal "$h1" "$h2"
+}
+
+@test "codex install: preserves unrelated hooks in hooks.json" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.PreToolUse = [{"hooks":[{"type":"command","command":"mytool"}]}]' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/hooks.json.t" && mv "$CODEX_HOME/hooks.json.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$CODEX_HOME/hooks.json")" = "mytool" ]
+}
+
+@test "codex uninstall: preserves dice data by default, removes with --purge-data" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    echo '{}' > "$CODEX_HOME/dice/slots.json"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ -f "$CODEX_HOME/dice/slots.json" ]
+    assert [ ! -e "$CODEX_HOME/dice/codex-stop.ts" ]
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    bash "$PROJ_DIR/install.sh" uninstall codex --purge-data >/dev/null 2>&1
+    assert [ ! -d "$CODEX_HOME/dice" ]
+}
+
+@test "codex uninstall: removes shared CLI only when no host remains" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    # Claude host present → CLI kept
+    mkdir -p "$HOME/.claude/dice"; ln -sf "$PROJ_DIR/src/index.ts" "$HOME/.claude/dice/cc-dice.ts"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ -e "$HOME/.local/bin/agent-dice" ]
+    # remove Claude marker → next codex uninstall drops the CLI
+    rm -f "$HOME/.claude/dice/cc-dice.ts"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ ! -e "$HOME/.local/bin/agent-dice" ]
+}
+
+@test "codex install: custom CODEX_HOME is honored for data and hooks.json" {
+    command -v jq >/dev/null 2>&1 || skip "jq required for installer tests"
+    export CODEX_HOME="$CC_DICE_BASE/custom-codex-root"
+    mkdir -p "$CODEX_HOME"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ -d "$CODEX_HOME/dice/state" ]
+    assert [ -f "$CODEX_HOME/hooks.json" ]
+}
