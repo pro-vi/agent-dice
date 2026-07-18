@@ -39,9 +39,12 @@ async function main(): Promise<void> {
       if (!slot) continue;
       if (result.triggered) {
         triggered.push(renderTrigger(result, slot));
-      } else if (result.diceCount > 0) {
-        // Non-trigger rolls: visible to the user only (stdout), never to the model.
-        console.log(`${slot.name}: ${result.diceCount}d${slot.die} = [${result.rolls.join(", ")}] (best: ${result.best})`);
+      } else if (result.diceCount > 0 && process.env.DEBUG === "1") {
+        // Non-trigger rolls go to stderr under DEBUG only. Unlike Claude (where a
+        // Stop hook's exit-0 stdout is harmless user-visible text), Codex PARSES a
+        // Stop hook's stdout as JSON (stop.command.output.schema.json), so stdout is
+        // kept clean — a non-trigger Stop is silent (exit 0, no output).
+        console.error(`${slot.name}: ${result.diceCount}d${slot.die} = [${result.rolls.join(", ")}] (best: ${result.best})`);
       }
     }
 
