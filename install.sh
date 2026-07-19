@@ -213,6 +213,7 @@ install_dice() {
     # message reflects whether the link actually happened.
     local bin_dir="${HOME}/.local/bin" cli_ok=1
     mkdir -p "$bin_dir"
+    migrate_legacy_cli   # upgrade from a legacy cc-dice CLI link before (re)linking
     safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" || cli_ok=0
     safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" || cli_ok=0
     if [ "$cli_ok" -eq 1 ]; then
@@ -464,6 +465,27 @@ safe_unlink() {
     return 0
 }
 
+# One-time migration for users upgrading from the old "cc-dice" install. The
+# rename cc-dice -> agent-dice moved the clone dir; the shared CLI's strict
+# ownership check would otherwise REFUSE to repoint the command (it sees the old
+# path as not-ours), silently leaving `agent-dice` on the pre-rename code. Remove a
+# CLI symlink that points into a legacy `.../cc-dice/` checkout so the fresh, owned
+# link can be created against this checkout. Only touches our own known links.
+migrate_legacy_cli() {
+    local bin_dir="${HOME}/.local/bin" link cur migrated=0
+    for link in "$bin_dir/agent-dice" "$bin_dir/cc-dice"; do
+        [ -L "$link" ] || continue
+        cur="$(readlink "$link")"
+        case "$cur" in
+            */cc-dice/bin/agent-dice.ts | */cc-dice/bin/cc-dice.ts) rm -f "$link"; migrated=1 ;;
+        esac
+    done
+    if [ "$migrated" -eq 1 ]; then
+        print_info "Migrated a legacy 'cc-dice' CLI link → relinking to this checkout"
+        [ -d "${HOME}/.local/share/cc-dice" ] && print_info "(the old clone ~/.local/share/cc-dice is now unused — safe to remove)"
+    fi
+}
+
 # reconcile_codex_hook <event> <hook_path> <present|absent>
 #
 # Drive hooks.json to the desired state for ONE owned hook ENTRY. Ownership is
@@ -495,14 +517,25 @@ reconcile_codex_hook() {
         print_error "hooks.json is not valid JSON — leaving it untouched"; return 1
     fi
 
-    local cmd tmp
+    local cmd tmp write_target
     cmd="$(codex_hook_cmd "$hook_path")"
-    # Temp file as a SIBLING of hooks.json so the final mv is an atomic same-
+    # Write THROUGH a symlinked hooks.json (dotfiles / stow / chezmoi): resolve to
+    # the real target so the atomic rename replaces THAT file and preserves the
+    # link. A non-symlink resolves to itself; a resolution failure falls back to the
+    # path (so we never lose the ability to write).
+    write_target="$CODEX_HOOKS_JSON"
+    if [ -L "$CODEX_HOOKS_JSON" ]; then
+        local _lt _dir
+        _lt="$(readlink "$CODEX_HOOKS_JSON")"
+        _dir="$(cd "$(dirname "$CODEX_HOOKS_JSON")" 2>/dev/null && cd "$(dirname "$_lt")" 2>/dev/null && pwd -P)"
+        [ -n "$_dir" ] && write_target="$_dir/$(basename "$_lt")"
+    fi
+    # Temp file as a SIBLING of the write target so the final mv is an atomic same-
     # filesystem rename. A bare `mktemp` lands in /tmp (often a different fs, e.g.
     # tmpfs), making mv a non-atomic copy+unlink that can leave a half-written,
-    # corrupt hooks.json if interrupted. Fails closed if the dir is read-only.
-    tmp="$(mktemp "${CODEX_HOOKS_JSON}.XXXXXX" 2>/dev/null)" || {
-        print_error "Cannot create a temp file next to $CODEX_HOOKS_JSON (read-only?)"; return 1
+    # corrupt file if interrupted. Fails closed if the dir is read-only.
+    tmp="$(mktemp "${write_target}.XXXXXX" 2>/dev/null)" || {
+        print_error "Cannot create a temp file next to $write_target (read-only?)"; return 1
     }
     if ! jq --arg e "$event" --arg cmd "$cmd" --arg state "$state" --argjson to 10 '
         def canon: {type: "command", command: $cmd, timeout: $to};
@@ -534,11 +567,11 @@ reconcile_codex_hook() {
     if ! jq empty "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
         rm -f "$tmp"; print_error "reconcile produced invalid JSON (left untouched)"; return 1
     fi
-    if cmp -s "$tmp" "$CODEX_HOOKS_JSON"; then
+    if cmp -s "$tmp" "$write_target"; then
         rm -f "$tmp"; return 0                                          # already canonical — no write, no trust churn
     fi
-    if ! mv "$tmp" "$CODEX_HOOKS_JSON" 2>/dev/null; then
-        rm -f "$tmp"; print_error "Cannot write $CODEX_HOOKS_JSON (read-only?)"; return 1
+    if ! mv "$tmp" "$write_target" 2>/dev/null; then
+        rm -f "$tmp"; print_error "Cannot write $write_target (read-only?)"; return 1
     fi
     return 0
 }
@@ -584,6 +617,7 @@ install_codex() {
 
     local bin_dir="${HOME}/.local/bin"
     mkdir -p "$bin_dir"
+    migrate_legacy_cli   # upgrade from a legacy cc-dice CLI link before (re)linking
     safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" || return 1
     safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" || return 1
     print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"

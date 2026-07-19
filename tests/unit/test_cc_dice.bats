@@ -1482,6 +1482,28 @@ codex_setup() {
     assert [ ! -d "$CODEX_HOME/dice" ]
 }
 
+@test "codex reconcile: writes THROUGH a symlinked hooks.json (preserves link + existing hooks)" {
+    command -v jq >/dev/null 2>&1 || skip "jq required"
+    codex_setup
+    mkdir -p "$CC_DICE_BASE/dotfiles"
+    # a dotfiles-managed hooks.json with the user's own hook, symlinked into ~/.codex
+    echo '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-existing-notify"}]}]}}' > "$CC_DICE_BASE/dotfiles/hooks.json"
+    ln -s "$CC_DICE_BASE/dotfiles/hooks.json" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ -L "$CODEX_HOME/hooks.json" ]                                    # link preserved, not clobbered
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command|test("codex-stop"))]|length' "$CC_DICE_BASE/dotfiles/hooks.json")" = "1" ]   # our hook in the target
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command=="my-existing-notify")]|length' "$CC_DICE_BASE/dotfiles/hooks.json")" = "1" ] # user's hook survived
+}
+
+@test "codex install: migrates a legacy cc-dice CLI link to this checkout" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/oldshare/cc-dice/bin"
+    : > "$CC_DICE_BASE/oldshare/cc-dice/bin/agent-dice.ts"
+    ln -sf "$CC_DICE_BASE/oldshare/cc-dice/bin/agent-dice.ts" "$HOME/.local/bin/agent-dice"   # legacy cc-dice CLI
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$PROJ_DIR/bin/agent-dice.ts" ]     # repointed, not stuck stale
+}
+
 @test "codex reconcile: preserves an unrelated sibling in the same hooks[] (entry-level)" {
     codex_setup
     bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1

@@ -91,9 +91,13 @@ exit-2 nudge — not like Pi's in-process extension.
   canonicalized (absolute + physical) on both sides — installer `pwd -P`, runtime
   `realpathSync` — so aliased spellings (trailing slash, symlinked root) map to one identity.
   `--purge-data` only deletes a dice dir this installer created (it stamps a `.agent-dice`
-  marker); an unmarked/pre-existing dir is refused. On first run Codex asks to trust the
-  command hook; approve it (a persisted approval) or pass `--dangerously-bypass-hook-trust`
-  for a single non-interactive invocation.
+  marker); an unmarked/pre-existing dir is refused. A **symlinked `hooks.json`** (dotfiles /
+  stow / chezmoi) is written **through** — the reconciler resolves the link and atomically
+  replaces its target, preserving the symlink and any hooks already in it. Upgrading from the
+  old **cc-dice** install is handled: a CLI symlink pointing into a legacy `.../cc-dice/`
+  checkout is migrated (removed + relinked) so the command doesn't silently stay on pre-rename
+  code. On first run Codex asks to trust the command hook; approve it (a persisted approval) or
+  pass `--dangerously-bypass-hook-trust` for a single non-interactive invocation.
 
 - **Limitations (deliberate, for a single-user local tool):** the installer is the only writer
   of `hooks.json` and is not guarded against two concurrent `install`/`uninstall` runs (a
