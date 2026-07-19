@@ -159,6 +159,18 @@ EOFJSON
 
 # ---- Source resolution ----
 
+# Set SCRIPT_DIR from the local checkout WITHOUT ever cloning. Used by uninstall,
+# which must know this install's exact managed targets (for strict symlink
+# ownership) but must never fetch anything. Returns 1 if no local source is found.
+resolve_local_source_dir() {
+    local d
+    if [ -n "${BASH_SOURCE[0]:-}" ]; then
+        d="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+        if [ -n "$d" ] && [ -f "$d/src/index.ts" ]; then SCRIPT_DIR="$d"; return 0; fi
+    fi
+    return 1
+}
+
 resolve_source_dir() {
     if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/src/index.ts" 2>/dev/null ]; then
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -197,12 +209,17 @@ install_dice() {
 
     # Symlink the SHARED CLI ownership-safely (it is a shared-resource contract with
     # the Codex host): never clobber an unrelated file/symlink. Best-effort — the
-    # Claude hooks work without it, so a conflict warns rather than aborts.
-    local bin_dir="${HOME}/.local/bin"
+    # Claude hooks work without it, so a conflict warns rather than aborts, and the
+    # message reflects whether the link actually happened.
+    local bin_dir="${HOME}/.local/bin" cli_ok=1
     mkdir -p "$bin_dir"
-    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" "/bin/agent-dice.ts" || true
-    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" "/bin/agent-dice.ts" || true
-    print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" || cli_ok=0
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" || cli_ok=0
+    if [ "$cli_ok" -eq 1 ]; then
+        print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
+    else
+        print_warning "CLI not fully linked — a conflicting file exists at $bin_dir (resolve it, then re-run)"
+    fi
 }
 
 register_hooks() {
@@ -329,13 +346,16 @@ uninstall() {
     # Remove module symlink (Claude's own marker)
     rm -f "$DICE_BASE/cc-dice.ts"
 
+    # Locate this checkout (no clone) for strict CLI ownership.
+    resolve_local_source_dir || print_warning "Could not locate the agent-dice source; CLI left in place"
+
     # Shared CLI: remove only when no other host remains (Codex absent), and only
-    # our own symlink — never an unrelated file. Symmetric with uninstall_codex.
+    # our own symlink (exact target) — never an unrelated file. Symmetric with uninstall_codex.
     if [ -L "$CODEX_DICE_BASE/codex-stop.ts" ] || [ -e "$CODEX_DICE_BASE/codex-stop.ts" ]; then
         print_info "Kept shared CLI (Codex host still installed)"
     else
-        safe_unlink "${HOME}/.local/bin/agent-dice" "/bin/agent-dice.ts"
-        safe_unlink "${HOME}/.local/bin/cc-dice" "/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/agent-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
         print_success "Removed CLI symlinks"
     fi
 
@@ -364,29 +384,31 @@ uninstall() {
 # Canonical command string for a hook script path: `bun '<path>'`.
 codex_hook_cmd() { echo "bun $(jq -nr --arg p "$1" '$p | @sh')"; }
 
-# A symlink is OWNED by agent-dice iff its target path ends with the exact
-# role-suffix $2 — e.g. "/bin/agent-dice.ts" or "/hooks/codex-stop.ts". This is
-# stricter than a basename match (an unrelated "/other/agent-dice.ts" is NOT owned)
-# and location-independent (a link into any agent-dice checkout is ours), so it
-# needs no SCRIPT_DIR at uninstall time.
+# A symlink is OWNED by this install iff its target is EXACTLY the file we manage
+# ($2, the exact absolute target). Same-file (inode) check when both exist, exact
+# stored-string when the link dangles. STRICT on purpose: an unrelated
+# ".../bin/agent-dice.ts" from another tree is NOT ours (path shape is not
+# ownership), and a moved-checkout link is a conflict to resolve manually — never
+# a silent clobber. Cross-checkout migration, if ever wanted, gets an explicit
+# marker/force flag, not inferred ownership.
 link_owned_by() {
-    local link="$1" suffix="$2" cur
+    local link="$1" target="$2"
     [ -L "$link" ] || return 1
-    cur="$(readlink "$link")"
-    case "$cur" in
-        *"$suffix") return 0 ;;
-        *) return 1 ;;
-    esac
+    if [ -e "$link" ] && [ -e "$target" ]; then
+        [ "$link" -ef "$target" ]      # resolves both; true only for the same file
+    else
+        [ "$(readlink "$link")" = "$target" ]   # dangling link: exact stored target
+    fi
 }
 
-# Create $2 -> $1 only if safe to OWN: absent, or an existing symlink already owned
-# (target ends with role-suffix $3). Refuse to clobber a regular file or an
-# unrelated symlink — never destroy something we didn't create. Returns 1 on conflict.
+# Create $2 -> $1 only if safe to OWN: absent, or an existing symlink that already
+# points exactly at $1. Refuse to clobber a regular file or any other symlink —
+# never destroy something we didn't create. Returns 1 on conflict.
 safe_link() {
-    local target="$1" link="$2" suffix="$3"
+    local target="$1" link="$2"
     if [ -L "$link" ]; then
-        if ! link_owned_by "$link" "$suffix"; then
-            print_error "Refusing to overwrite unrelated symlink: $link -> $(readlink "$link")"; return 1
+        if ! link_owned_by "$link" "$target"; then
+            print_error "Refusing to overwrite symlink not managed by this install: $link -> $(readlink "$link")"; return 1
         fi
     elif [ -e "$link" ]; then
         print_error "Refusing to overwrite existing non-symlink file: $link"; return 1
@@ -394,13 +416,13 @@ safe_link() {
     ln -sf "$target" "$link"
 }
 
-# Remove $1 only if it is an OWNED symlink (target ends with role-suffix $2). Leave
-# unrelated files/symlinks in place. Always returns 0.
+# Remove $1 only if it is a symlink pointing exactly at the managed target $2.
+# Leave anything else in place. Always returns 0.
 safe_unlink() {
-    local link="$1" suffix="$2"
+    local link="$1" target="$2"
     if [ -L "$link" ]; then
-        if link_owned_by "$link" "$suffix"; then rm -f "$link"; return 0; fi
-        print_warning "Left unrelated symlink in place: $link -> $(readlink "$link")"
+        if link_owned_by "$link" "$target"; then rm -f "$link"; return 0; fi
+        print_warning "Left symlink not managed by this install: $link -> $(readlink "$link")"
     elif [ -e "$link" ]; then
         print_warning "Left non-symlink file in place: $link"
     fi
@@ -500,14 +522,14 @@ install_codex() {
     # Symlink hook scripts under the dice base (NOT $CODEX_ROOT/hooks, which may be
     # a user-owned dir). ESM resolves the scripts' `../src/**` imports against the
     # real repo path, so no module symlink is needed.
-    safe_link "$SCRIPT_DIR/hooks/codex-stop.ts" "$CODEX_DICE_BASE/codex-stop.ts" "/hooks/codex-stop.ts" || return 1
-    safe_link "$SCRIPT_DIR/hooks/codex-session-start.ts" "$CODEX_DICE_BASE/codex-session-start.ts" "/hooks/codex-session-start.ts" || return 1
+    safe_link "$SCRIPT_DIR/hooks/codex-stop.ts" "$CODEX_DICE_BASE/codex-stop.ts" || return 1
+    safe_link "$SCRIPT_DIR/hooks/codex-session-start.ts" "$CODEX_DICE_BASE/codex-session-start.ts" || return 1
     print_success "Symlinked Codex hooks to $CODEX_DICE_BASE"
 
     local bin_dir="${HOME}/.local/bin"
     mkdir -p "$bin_dir"
-    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" "/bin/agent-dice.ts" || return 1
-    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" "/bin/agent-dice.ts" || return 1
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" || return 1
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" || return 1
     print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
 }
 
@@ -523,6 +545,13 @@ uninstall_codex() {
     local purge="${1:-}"
     print_info "Uninstalling agent-dice for Codex..."
 
+    # Locate this checkout (no clone) so ownership is judged against exact managed
+    # targets. If it can't be found, symlink removal is skipped (safe): the
+    # strict check leaves anything it can't positively confirm as ours.
+    if ! resolve_local_source_dir; then
+        print_warning "Could not locate the agent-dice source; symlinks left in place (run uninstall from the checkout)"
+    fi
+
     # Reconcile hooks.json to owned-absent FIRST. If EITHER reconcile fails, ABORT
     # the whole uninstall before touching any symlink or data — a failed reconcile
     # must not fall through to symlink/CLI removal or --purge-data (which would
@@ -533,8 +562,8 @@ uninstall_codex() {
         return 1
     fi
     print_success "Unregistered Codex hooks"
-    safe_unlink "$CODEX_DICE_BASE/codex-stop.ts" "/hooks/codex-stop.ts"
-    safe_unlink "$CODEX_DICE_BASE/codex-session-start.ts" "/hooks/codex-session-start.ts"
+    safe_unlink "$CODEX_DICE_BASE/codex-stop.ts" "$SCRIPT_DIR/hooks/codex-stop.ts"
+    safe_unlink "$CODEX_DICE_BASE/codex-session-start.ts" "$SCRIPT_DIR/hooks/codex-session-start.ts"
     print_success "Removed Codex hook symlinks"
 
     # Remove the SHARED CLI only when no other host remains (Claude module symlink
@@ -542,8 +571,8 @@ uninstall_codex() {
     if [ -L "$DICE_BASE/cc-dice.ts" ] || [ -e "$DICE_BASE/cc-dice.ts" ]; then
         print_info "Kept shared CLI (Claude host still installed)"
     else
-        safe_unlink "${HOME}/.local/bin/agent-dice" "/bin/agent-dice.ts"
-        safe_unlink "${HOME}/.local/bin/cc-dice" "/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/agent-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
         print_success "Removed shared CLI symlinks (no host remains)"
     fi
 

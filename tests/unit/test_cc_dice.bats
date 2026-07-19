@@ -1391,14 +1391,33 @@ codex_setup() {
     assert_output "$CC_DICE_BASE/ch/dice"
 }
 
-@test "codex install: refuses a same-basename symlink at a non-owned path (suffix ownership)" {
+@test "codex install: refuses an unrelated same-basename symlink at the CLI path (strict ownership)" {
     codex_setup
     mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/other"
     echo "unrelated" > "$CC_DICE_BASE/other/agent-dice.ts"
-    ln -sf "$CC_DICE_BASE/other/agent-dice.ts" "$HOME/.local/bin/agent-dice"  # basename matches, suffix does not
+    ln -sf "$CC_DICE_BASE/other/agent-dice.ts" "$HOME/.local/bin/agent-dice"  # basename matches
     run bash "$PROJ_DIR/install.sh" codex
     assert_failure
     assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$CC_DICE_BASE/other/agent-dice.ts" ]
+}
+
+@test "codex install: refuses a same-ROLE-SUFFIX symlink from another tree (strict, not suffix)" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/unrelated/bin"
+    echo "another checkout" > "$CC_DICE_BASE/unrelated/bin/agent-dice.ts"   # ends with /bin/agent-dice.ts, different file
+    ln -sf "$CC_DICE_BASE/unrelated/bin/agent-dice.ts" "$HOME/.local/bin/agent-dice"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$CC_DICE_BASE/unrelated/bin/agent-dice.ts" ]
+}
+
+@test "codex install: adopts an existing symlink that already points at THIS checkout's CLI" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$PROJ_DIR/bin/agent-dice.ts" "$HOME/.local/bin/agent-dice"   # exactly our managed target
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_success
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$PROJ_DIR/bin/agent-dice.ts" ]
 }
 
 @test "codex reconcile: preserves an unrelated sibling in the same hooks[] (entry-level)" {
