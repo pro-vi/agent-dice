@@ -30,6 +30,17 @@ export interface CodexHookInput {
 }
 
 /**
+ * The single boundary where a Codex hook's untrusted stdin JSON is narrowed to
+ * `CodexHookInput`. Every field is optional and every consumer reads defensively,
+ * so this assertion never grounds an unsafe dereference — it just gives the two
+ * hook entry scripts one shared, documented parse point instead of restating the
+ * cast. Throws on absent/malformed stdin; the hooks catch and fail open.
+ */
+export async function readCodexInput(): Promise<CodexHookInput> {
+  return (await Bun.stdin.json()) as CodexHookInput;
+}
+
+/**
  * Codex home root. `CODEX_HOME` when set (and non-empty), else `~/.codex`.
  *
  * Uses `||`, NOT `??`, so an empty-string `CODEX_HOME` falls through to the

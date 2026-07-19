@@ -565,11 +565,12 @@ install_codex() {
     # Ownership marker: stamp ONLY when this installer creates the dice dir. A
     # pre-existing dir is never claimed (its contents may be the user's), so
     # --purge-data will refuse to delete it later.
-    if [ -d "$CODEX_DICE_BASE" ]; then
-        mkdir -p "$CODEX_DICE_BASE/state"
+    local pre_existing=false
+    [ -d "$CODEX_DICE_BASE" ] && pre_existing=true
+    mkdir -p "$CODEX_DICE_BASE/state"
+    if $pre_existing; then
         print_info "Using existing $CODEX_DICE_BASE (no ownership marker — --purge-data will refuse it)"
     else
-        mkdir -p "$CODEX_DICE_BASE/state"
         : > "$CODEX_DICE_BASE/.agent-dice"      # we created it → safe to purge later
         print_success "Created $CODEX_DICE_BASE"
     fi

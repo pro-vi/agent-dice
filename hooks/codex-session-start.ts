@@ -17,11 +17,11 @@
  */
 
 import * as engine from "../src/core/engine";
-import { createCodexHost, resolveCodexContext, type CodexHookInput } from "../src/adapters/codex/host";
+import { createCodexHost, resolveCodexContext, readCodexInput } from "../src/adapters/codex/host";
 
 async function main(): Promise<void> {
   try {
-    const input = (await Bun.stdin.json()) as CodexHookInput;
+    const input = await readCodexInput();
     if (input.source !== "startup" && input.source !== "clear") return; // continuation — leave state
 
     const host = createCodexHost();

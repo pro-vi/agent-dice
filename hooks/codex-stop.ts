@@ -17,12 +17,12 @@
  */
 
 import * as engine from "../src/core/engine";
-import { createCodexHost, resolveCodexContext, type CodexHookInput } from "../src/adapters/codex/host";
+import { createCodexHost, resolveCodexContext, readCodexInput } from "../src/adapters/codex/host";
 import { renderTrigger } from "../src/adapters/claude-renderer";
 
 async function main(): Promise<void> {
   try {
-    const input = (await Bun.stdin.json()) as CodexHookInput;
+    const input = await readCodexInput();
 
     // createCodexHost() points the file stores at the Codex base BEFORE any
     // registry/state read, so listSlots + the engine both see ~/.codex/dice.
