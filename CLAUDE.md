@@ -47,6 +47,7 @@ bun run test
 | Variable | Purpose |
 |----------|---------|
 | `AGENT_DICE_BASE` | Override base directory (default: Claude `~/.claude/dice/`, Codex `${CODEX_HOME:-~/.codex}/dice`; `CC_DICE_BASE` is a back-compat alias) |
+| `AGENT_DICE_HOST` | CLI host target: `codex` points the `agent-dice` CLI at the Codex base (bare CLI defaults to Claude; `AGENT_DICE_BASE` overrides) |
 | `AGENT_DICE_SESSION_ID` | Override session ID (`CC_DICE_SESSION_ID` is a back-compat alias) |
 | `CODEX_HOME` | Codex home root; the Codex host stores under `$CODEX_HOME/dice` (default `~/.codex`) |
 | `DEBUG=1` | Verbose logging to stderr |

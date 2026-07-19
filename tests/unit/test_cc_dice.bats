@@ -1384,6 +1384,25 @@ codex_setup() {
     assert_output --partial "error"
 }
 
+@test "cli: AGENT_DICE_HOST=codex targets the Codex base, not Claude's" {
+    export CODEX_HOME="$CC_DICE_BASE/ch"
+    mkdir -p "$CODEX_HOME"
+    run env -u AGENT_DICE_BASE -u CC_DICE_BASE AGENT_DICE_HOST=codex bun "$CLI" register demo --message x
+    assert_success
+    assert [ "$(jq -r 'has("demo")' "$CODEX_HOME/dice/slots.json")" = "true" ]
+    assert [ ! -f "$HOME/.claude/dice/slots.json" ]
+}
+
+@test "cli: explicit AGENT_DICE_BASE wins over AGENT_DICE_HOST=codex" {
+    export CODEX_HOME="$CC_DICE_BASE/ch"
+    local explicit="$CC_DICE_BASE/explicit"
+    mkdir -p "$explicit/state" "$CODEX_HOME"
+    run env -u CC_DICE_BASE AGENT_DICE_HOST=codex AGENT_DICE_BASE="$explicit" bun "$CLI" register demo --message x
+    assert_success
+    assert [ -f "$explicit/slots.json" ]
+    assert [ ! -f "$CODEX_HOME/dice/slots.json" ]
+}
+
 @test "codex host: empty AGENT_DICE_BASE resolves to the Codex base, not Claude's store" {
     export CODEX_HOME="$CC_DICE_BASE/ch"
     run env -u CC_DICE_BASE AGENT_DICE_BASE="" bun -e 'import { codexBaseDir } from "'"$PROJ_DIR"'/src/adapters/codex/host"; process.stdout.write(codexBaseDir())'

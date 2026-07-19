@@ -314,6 +314,7 @@ agent-dice/
 | `AGENT_DICE_BASE` | Override base directory (default: Claude `~/.claude/dice/`, Codex `${CODEX_HOME:-~/.codex}/dice`; `CC_DICE_BASE` is a back-compat alias). Point two hosts at one path to share config. | Test setup / user |
 | `AGENT_DICE_SESSION_ID` | Session UUID for state isolation (`CC_DICE_SESSION_ID` alias) | SessionStart hook |
 | `CODEX_HOME` | Codex home root; the Codex host stores under `$CODEX_HOME/dice` (default `~/.codex`) | Codex / user |
+| `AGENT_DICE_HOST` | CLI host target: `codex` points the `agent-dice` CLI at the Codex base (bare CLI → Claude; `AGENT_DICE_BASE` overrides) | User |
 | `DEBUG` | Verbose logging to stderr when `"1"` | User |
 
 ---

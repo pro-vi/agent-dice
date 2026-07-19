@@ -44,9 +44,11 @@ Codex ships proper lifecycle hooks, so the same dice work there too (see [Use wi
 ./install.sh uninstall codex   # remove (keeps your slots; add --purge-data to wipe)
 ```
 
-On first run Codex asks to **trust** the command hook — approve it (a persisted approval that sticks), or pass `--dangerously-bypass-hook-trust` for a single non-interactive invocation. Codex slots live under `${CODEX_HOME:-~/.codex}/dice`, so point the CLI there to configure them:
+On first run Codex asks to **trust** the command hook — approve it (a persisted approval that sticks), or pass `--dangerously-bypass-hook-trust` for a single non-interactive invocation. Codex slots live under `${CODEX_HOME:-~/.codex}/dice`; point the CLI there with `AGENT_DICE_HOST=codex` (the bare CLI defaults to the Claude base):
 
 ```bash
+AGENT_DICE_HOST=codex agent-dice register my-slot --message 'Triggered!'
+# or an explicit path (wins over AGENT_DICE_HOST):
 AGENT_DICE_BASE="${CODEX_HOME:-$HOME/.codex}/dice" agent-dice register my-slot --message 'Triggered!'
 ```
 
@@ -176,6 +178,7 @@ import { registerSlot, checkAllSlots } from "./src/index";
 | Variable | Purpose |
 |----------|---------|
 | `AGENT_DICE_BASE` | Override base directory (default: `~/.claude/dice/` for Claude, `${CODEX_HOME:-~/.codex}/dice` for Codex, `~/.pi/agent/dice/` for Pi). Point two hosts at one path to share config. |
+| `AGENT_DICE_HOST` | CLI host target: `codex` points `agent-dice` at the Codex base (a bare CLI defaults to Claude). `AGENT_DICE_BASE` overrides it. |
 | `AGENT_DICE_SESSION_ID` | Override session ID |
 | `CODEX_HOME` | Codex home root; the Codex host stores under `$CODEX_HOME/dice` (default `~/.codex`) |
 | `DEBUG=1` | Verbose logging to stderr |
@@ -212,17 +215,18 @@ the hook exits 2, which Codex re-injects to the model — exactly like Claude. I
 `SessionStart` hook clears `clearOnSessionStart` slots on a genuinely new session
 (`source` `startup`/`clear`).
 
-Configure slots with the CLI pointed at the Codex base:
+Configure slots with the CLI pointed at the Codex base via `AGENT_DICE_HOST=codex`:
 
 ```bash
-AGENT_DICE_BASE="${CODEX_HOME:-$HOME/.codex}/dice" agent-dice register refactor \
+AGENT_DICE_HOST=codex agent-dice register refactor \
   --die 20 --target 20 --message "Cast /refactor and review."
 ```
 
 Codex config is CLI-driven (external hook processes can't register in-process tools, so
 there's no `/dice` command or `register_dice` tool as under Pi). Slots live under
-`${CODEX_HOME:-~/.codex}/dice`; set `AGENT_DICE_BASE` to the same path for two hosts to
-share one config.
+`${CODEX_HOME:-~/.codex}/dice`. `AGENT_DICE_HOST=codex` targets that base; a bare
+`agent-dice register` (no env) targets the **Claude** base, and an explicit
+`AGENT_DICE_BASE` overrides both — point two hosts at one path to share config.
 
 ## Use with Pi
 

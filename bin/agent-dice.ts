@@ -35,6 +35,20 @@ import type { CheckContext } from "../src/types";
 const args = process.argv.slice(2);
 const command = args[0];
 
+/**
+ * Host targeting for the CLI. The default base is Claude's (`~/.claude/dice`), so
+ * `AGENT_DICE_HOST=codex` points the CLI at the Codex base
+ * (`${CODEX_HOME:-~/.codex}/dice`) without spelling `AGENT_DICE_BASE` by hand —
+ * closing the footgun where a bare `agent-dice register` silently configures
+ * Claude instead of Codex. An explicit `AGENT_DICE_BASE` always wins.
+ */
+async function resolveHostBase(): Promise<void> {
+  if (process.env.AGENT_DICE_HOST === "codex" && !process.env.AGENT_DICE_BASE) {
+    const { codexBaseDir } = await import("../src/adapters/codex/host");
+    process.env.AGENT_DICE_BASE = codexBaseDir();
+  }
+}
+
 function printUsage(): void {
   console.log(`Usage: agent-dice <command> [options]
 
@@ -61,7 +75,12 @@ Register Options:
   --no-clear-on-start          Don't clear on session start
   --no-reset-on-trigger        Don't reset accumulator on trigger
   --no-flavor                  Don't prepend dice emoji + roll lingo
-  --message <msg>              Trigger message for stderr`);
+  --message <msg>              Trigger message for stderr
+
+Environment:
+  AGENT_DICE_HOST=codex        Target the Codex base (\${CODEX_HOME:-~/.codex}/dice)
+                               instead of the default Claude base (~/.claude/dice)
+  AGENT_DICE_BASE=<dir>        Target an explicit base dir (wins over AGENT_DICE_HOST)`);
 }
 
 function parseArg(flag: string): string | undefined {
@@ -84,6 +103,8 @@ async function main(): Promise<void> {
     printUsage();
     process.exit(0);
   }
+
+  await resolveHostBase(); // AGENT_DICE_HOST=codex → target the Codex base
 
   switch (command) {
     case "register": {
