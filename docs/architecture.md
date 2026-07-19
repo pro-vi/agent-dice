@@ -86,10 +86,22 @@ exit-2 nudge — not like Pi's in-process extension.
   `source` `startup`/`clear`, skipping `resume`/`compact`).
 - **Registration:** `install.sh codex` writes `Stop` + `SessionStart` command hooks (with a
   timeout) into `${CODEX_HOME:-~/.codex}/hooks.json` (a user-layer config whose block shape
-  matches Claude's `settings.json`). Registration is idempotent — byte-for-byte no-op when
-  unchanged — so it never churns Codex's index-sensitive hook trust. On first run Codex asks
-  to trust the command hook; approve it (a persisted approval) or pass
-  `--dangerously-bypass-hook-trust` for a single non-interactive invocation.
+  matches Claude's `settings.json`). Registration is idempotent — a byte-for-byte no-op once
+  the file is normalized — so it never churns Codex's index-sensitive hook trust. The root is
+  canonicalized (absolute + physical) on both sides — installer `pwd -P`, runtime
+  `realpathSync` — so aliased spellings (trailing slash, symlinked root) map to one identity.
+  `--purge-data` only deletes a dice dir this installer created (it stamps a `.agent-dice`
+  marker); an unmarked/pre-existing dir is refused. On first run Codex asks to trust the
+  command hook; approve it (a persisted approval) or pass `--dangerously-bypass-hook-trust`
+  for a single non-interactive invocation.
+
+- **Limitations (deliberate, for a single-user local tool):** the installer is the only writer
+  of `hooks.json` and is not guarded against two concurrent `install`/`uninstall` runs (a
+  non-issue for a manual CLI; normal Codex sessions never write it). Reconciliation assumes
+  Codex's valid hook schema (arrays of command groups) — hand-authored non-array shapes aren't
+  repaired. Host isolation holds **one host per process**: the Claude and Codex hosts share the
+  `AGENT_DICE_BASE` env and must not be constructed in the same process (they never are — each
+  is a separate hook process).
 
 ---
 

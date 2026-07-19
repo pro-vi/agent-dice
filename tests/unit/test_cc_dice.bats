@@ -1420,6 +1420,49 @@ codex_setup() {
     assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$PROJ_DIR/bin/agent-dice.ts" ]
 }
 
+@test "codex canonical root: trailing-slash / dot aliases collapse to one registration" {
+    command -v jq >/dev/null 2>&1 || skip "jq required"
+    local root="$CC_DICE_BASE/ch"
+    CODEX_HOME="$root/"  bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # trailing slash
+    CODEX_HOME="$root/." bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # /.
+    CODEX_HOME="$root"   bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # bare
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command | test("codex-stop"))] | length' "$root/hooks.json")" = "1" ]
+}
+
+@test "codex canonical root: symlink-aliased CODEX_HOME resolves to one registration" {
+    command -v jq >/dev/null 2>&1 || skip "jq required"
+    mkdir -p "$CC_DICE_BASE/real"
+    ln -s "$CC_DICE_BASE/real" "$CC_DICE_BASE/link"
+    CODEX_HOME="$CC_DICE_BASE/real" bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    CODEX_HOME="$CC_DICE_BASE/link" bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # alias of the same dir
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command | test("codex-stop"))] | length' "$CC_DICE_BASE/real/hooks.json")" = "1" ]
+}
+
+@test "codex install: rejects a relative CODEX_HOME" {
+    run env CODEX_HOME="relative/path" bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert_output --partial "absolute path"
+}
+
+@test "codex purge: refuses to delete a pre-existing (unmarked) dice dir" {
+    codex_setup
+    mkdir -p "$CODEX_HOME/dice"                       # dir the installer did NOT create
+    echo keep > "$CODEX_HOME/dice/user-data"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1  # installs into it → no ownership marker
+    assert [ ! -f "$CODEX_HOME/dice/.agent-dice" ]
+    run bash "$PROJ_DIR/install.sh" uninstall codex --purge-data
+    assert_output --partial "Refusing --purge-data"
+    assert [ -f "$CODEX_HOME/dice/user-data" ]         # user data survives
+}
+
+@test "codex purge: deletes only when the installer created the dir (marker present)" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1  # installer creates dir → marker
+    assert [ -f "$CODEX_HOME/dice/.agent-dice" ]
+    bash "$PROJ_DIR/install.sh" uninstall codex --purge-data >/dev/null 2>&1
+    assert [ ! -d "$CODEX_HOME/dice" ]
+}
+
 @test "codex reconcile: preserves an unrelated sibling in the same hooks[] (entry-level)" {
     codex_setup
     bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1

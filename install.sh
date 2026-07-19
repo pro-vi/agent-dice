@@ -384,6 +384,39 @@ uninstall() {
 # Canonical command string for a hook script path: `bun '<path>'`.
 codex_hook_cmd() { echo "bun $(jq -nr --arg p "$1" '$p | @sh')"; }
 
+# Normalize CODEX_ROOT to ONE canonical absolute/physical path, then derive the
+# data + hooks paths from it. Collapses aliases (trailing slash, "/.", "//", a
+# symlinked root) to a single identity so install / uninstall / check always agree
+# — the TS runtime resolves the same way (realpathSync in codexRoot, host.ts). An
+# absolute CODEX_HOME is required (a relative root is unsafe: it resolves against
+# the caller's cwd at install, runtime, and uninstall independently).
+# canonicalize_codex_root [--create]
+# With --create (install), the root dir is created AFTER the relative-path reject,
+# so `pwd -P` always applies — physical resolution is used on the very first install
+# too, and every later run agrees (crucial where an ancestor is a symlink, e.g.
+# macOS /var -> /private/var). Without it (check/uninstall), an existing dir is
+# resolved physically; a missing one falls back to a lexical collapse (there is
+# nothing installed to act on anyway).
+canonicalize_codex_root() {
+    local raw="${CODEX_HOME:-$HOME/.codex}"
+    case "$raw" in
+        /*) ;;
+        *) print_error "CODEX_HOME must be an absolute path (got '$raw')"; return 1 ;;
+    esac
+    if [ "${1:-}" = "--create" ]; then
+        mkdir -p "$raw" 2>/dev/null || true
+    fi
+    if [ -d "$raw" ]; then
+        CODEX_ROOT="$(cd "$raw" && pwd -P)"     # physical: resolves symlinks, "/.", "//", trailing slash
+    else
+        # Dir not present: lexically collapse "//", "/./", trailing "/." and "/".
+        CODEX_ROOT="$(printf '%s' "$raw" | sed -e 's://*:/:g' -e 's:/\./:/:g' -e 's:/\.$::' -e 's:/$::')"
+        [ -z "$CODEX_ROOT" ] && CODEX_ROOT="/"
+    fi
+    CODEX_DICE_BASE="$CODEX_ROOT/dice"
+    CODEX_HOOKS_JSON="$CODEX_ROOT/hooks.json"
+}
+
 # A symlink is OWNED by this install iff its target is EXACTLY the file we manage
 # ($2, the exact absolute target). Same-file (inode) check when both exist, exact
 # stored-string when the link dangles. STRICT on purpose: an unrelated
@@ -407,13 +440,15 @@ link_owned_by() {
 safe_link() {
     local target="$1" link="$2"
     if [ -L "$link" ]; then
-        if ! link_owned_by "$link" "$target"; then
-            print_error "Refusing to overwrite symlink not managed by this install: $link -> $(readlink "$link")"; return 1
-        fi
+        if link_owned_by "$link" "$target"; then return 0; fi   # already ours & correct → no-op
+        print_error "Refusing to overwrite symlink not managed by this install: $link -> $(readlink "$link")"; return 1
     elif [ -e "$link" ]; then
         print_error "Refusing to overwrite existing non-symlink file: $link"; return 1
     fi
-    ln -sf "$target" "$link"
+    # Non-clobbering create: `ln` WITHOUT -f, so a file that races into the path
+    # between the check above and here surfaces as a conflict (EEXIST) rather than
+    # being silently replaced. The create is the deciding atomic operation.
+    ln -s "$target" "$link"
 }
 
 # Remove $1 only if it is a symlink pointing exactly at the managed target $2.
@@ -438,9 +473,14 @@ safe_unlink() {
 # and the group's own metadata (matcher, …) are conserved; a group is dropped only
 # when it becomes empty. present → exactly one canonical {type,command,timeout}
 # owned entry at the first owned position (or appended), duplicates collapsed;
-# absent → all owned entries removed. Order is conserved. A correct file is left
-# byte-for-byte unchanged (idempotent, no trust churn). On unreadable/uncreatable/
-# unwritable JSON, hooks.json is left untouched and it returns 1.
+# absent → all owned entries removed. Order is conserved. A semantically-correct
+# file is left byte-for-byte unchanged ONCE NORMALIZED — the first run on a
+# hand-edited-but-valid file may reformat it (jq reserializes), and only then is a
+# re-run a true no-op. Assumes Codex's valid schema (arrays of command groups);
+# non-array hook shapes are not repaired. On unreadable/uncreatable/unwritable
+# JSON, hooks.json is left untouched and it returns 1. NOTE: each event write is
+# atomic, but a full install/uninstall reconciles Stop and SessionStart in TWO
+# separate writes — the PAIR is not one transaction (a manual-installer edge).
 reconcile_codex_hook() {
     local event="$1" hook_path="$2" state="$3"
 
@@ -522,8 +562,17 @@ codex_hook_registered() {
 install_codex() {
     print_info "Installing agent-dice for Codex..."
 
-    mkdir -p "$CODEX_DICE_BASE/state"
-    print_success "Created $CODEX_DICE_BASE"
+    # Ownership marker: stamp ONLY when this installer creates the dice dir. A
+    # pre-existing dir is never claimed (its contents may be the user's), so
+    # --purge-data will refuse to delete it later.
+    if [ -d "$CODEX_DICE_BASE" ]; then
+        mkdir -p "$CODEX_DICE_BASE/state"
+        print_info "Using existing $CODEX_DICE_BASE (no ownership marker — --purge-data will refuse it)"
+    else
+        mkdir -p "$CODEX_DICE_BASE/state"
+        : > "$CODEX_DICE_BASE/.agent-dice"      # we created it → safe to purge later
+        print_success "Created $CODEX_DICE_BASE"
+    fi
 
     # Symlink hook scripts under the dice base (NOT $CODEX_ROOT/hooks, which may be
     # a user-owned dir). ESM resolves the scripts' `../src/**` imports against the
@@ -583,8 +632,15 @@ uninstall_codex() {
     fi
 
     if [ "$purge" = "--purge-data" ]; then
-        rm -rf "$CODEX_DICE_BASE"
-        print_success "Purged Codex dice data ($CODEX_DICE_BASE)"
+        # Gate the recursive delete on the ownership marker: purge ONLY a dice dir
+        # this installer created. Refuse (never rm -rf) an unmarked or foreign dir.
+        if [ -f "$CODEX_DICE_BASE/.agent-dice" ]; then
+            rm -rf "$CODEX_DICE_BASE"
+            print_success "Purged Codex dice data ($CODEX_DICE_BASE)"
+        else
+            print_warning "Refusing --purge-data: no agent-dice ownership marker in $CODEX_DICE_BASE"
+            print_info "(this installer did not create it — remove it by hand if you're sure)"
+        fi
     else
         print_info "Kept Codex dice data at $CODEX_DICE_BASE (use 'uninstall codex --purge-data' to remove)"
     fi
@@ -699,6 +755,7 @@ case "${1:-}" in
             exit 1
         fi
         resolve_source_dir
+        canonicalize_codex_root --create || exit 1   # reject relative first, then create + physically resolve
         if ! install_codex; then
             print_error "Codex install aborted (conflicting path) — nothing registered."
             exit 1
@@ -719,6 +776,7 @@ case "${1:-}" in
         ;;
     uninstall|-u)
         if [ "${2:-}" = "codex" ]; then
+            canonicalize_codex_root || exit 1
             uninstall_codex "${3:-}"
         else
             uninstall
@@ -726,6 +784,7 @@ case "${1:-}" in
         ;;
     check|-c)
         if [ "${2:-}" = "codex" ]; then
+            canonicalize_codex_root || exit 1
             show_check_codex
         else
             show_check

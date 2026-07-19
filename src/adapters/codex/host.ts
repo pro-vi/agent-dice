@@ -14,8 +14,9 @@
  * id or depth.
  */
 
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { CoreCheckContext, DiceHost } from "../../core/contracts";
 import { createClaudeHost } from "../claude-code";
 import { getProjectHash } from "../../session";
@@ -36,7 +37,16 @@ export interface CodexHookInput {
  * runtime and installer resolve the same root in every case.
  */
 export function codexRoot(): string {
-  return process.env.CODEX_HOME || join(homedir(), ".codex");
+  const raw = process.env.CODEX_HOME || join(homedir(), ".codex");
+  // Physically resolve so a symlinked/aliased CODEX_HOME maps to ONE identity —
+  // matching the installer's `pwd -P` (canonicalize_codex_root in install.sh), so
+  // both sides agree on the store path. Falls back to a lexical-absolute path when
+  // the dir doesn't exist yet (realpathSync throws), collapsing "/.", "//", trailing.
+  try {
+    return realpathSync(raw);
+  } catch {
+    return resolve(raw);
+  }
 }
 
 /**
