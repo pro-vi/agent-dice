@@ -1391,6 +1391,63 @@ codex_setup() {
     assert_output "$CC_DICE_BASE/ch/dice"
 }
 
+@test "codex install: refuses a same-basename symlink at a non-owned path (suffix ownership)" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/other"
+    echo "unrelated" > "$CC_DICE_BASE/other/agent-dice.ts"
+    ln -sf "$CC_DICE_BASE/other/agent-dice.ts" "$HOME/.local/bin/agent-dice"  # basename matches, suffix does not
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$CC_DICE_BASE/other/agent-dice.ts" ]
+}
+
+@test "codex reconcile: preserves an unrelated sibling in the same hooks[] (entry-level)" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop[0].hooks += [{"type":"command","command":"KEEP-SIBLING"}]' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1                 # reconcile present
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command=="KEEP-SIBLING")] | length' "$CODEX_HOME/hooks.json")" = "1" ]
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1        # reconcile absent
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command=="KEEP-SIBLING")] | length' "$CODEX_HOME/hooks.json")" = "1" ]
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command|test("codex-stop"))] | length' "$CODEX_HOME/hooks.json")" = "0" ]
+}
+
+@test "codex check: drifted timeout fails the canonical registration check" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop[0].hooks[0].timeout = 99' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    run bash "$PROJ_DIR/install.sh" check codex
+    assert_failure
+}
+
+@test "codex install: read-only hooks dir propagates write failure (no false success)" {
+    codex_setup
+    [ "$(id -u)" -eq 0 ] && skip "read-only enforcement needs non-root"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop[0].hooks[0].timeout = 99' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    chmod 555 "$CODEX_HOME"
+    run bash "$PROJ_DIR/install.sh" codex
+    chmod 755 "$CODEX_HOME"
+    assert_failure
+    refute_output --partial "installation complete"
+}
+
+@test "codex uninstall: failed reconcile aborts before removal and --purge-data" {
+    codex_setup
+    [ "$(id -u)" -eq 0 ] && skip "read-only enforcement needs non-root"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    echo '{}' > "$CODEX_HOME/dice/slots.json"
+    chmod 555 "$CODEX_HOME"
+    run bash "$PROJ_DIR/install.sh" uninstall codex --purge-data
+    chmod 755 "$CODEX_HOME"
+    assert_failure
+    assert [ -f "$CODEX_HOME/dice/slots.json" ]
+    assert [ -e "$CODEX_HOME/dice/codex-stop.ts" ]
+}
+
 @test "codex install: re-install is byte-for-byte idempotent (no trust churn)" {
     codex_setup
     bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1

@@ -195,11 +195,13 @@ install_dice() {
     ln -sf "$SCRIPT_DIR/hooks/session-start.ts" "$HOOKS_DIR/dice-session-start.ts"
     print_success "Symlinked session-start hook to $HOOKS_DIR/dice-session-start.ts"
 
-    # Symlink CLI
+    # Symlink the SHARED CLI ownership-safely (it is a shared-resource contract with
+    # the Codex host): never clobber an unrelated file/symlink. Best-effort — the
+    # Claude hooks work without it, so a conflict warns rather than aborts.
     local bin_dir="${HOME}/.local/bin"
     mkdir -p "$bin_dir"
-    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice"
-    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice"
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" "/bin/agent-dice.ts" || true
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" "/bin/agent-dice.ts" || true
     print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
 }
 
@@ -332,8 +334,8 @@ uninstall() {
     if [ -L "$CODEX_DICE_BASE/codex-stop.ts" ] || [ -e "$CODEX_DICE_BASE/codex-stop.ts" ]; then
         print_info "Kept shared CLI (Codex host still installed)"
     else
-        safe_unlink "${HOME}/.local/bin/agent-dice" "agent-dice.ts"
-        safe_unlink "${HOME}/.local/bin/cc-dice" "agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/agent-dice" "/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "/bin/agent-dice.ts"
         print_success "Removed CLI symlinks"
     fi
 
@@ -362,15 +364,29 @@ uninstall() {
 # Canonical command string for a hook script path: `bun '<path>'`.
 codex_hook_cmd() { echo "bun $(jq -nr --arg p "$1" '$p | @sh')"; }
 
-# Create $2 -> $1 only if the path is safe to OWN: absent, or an existing symlink
-# whose target basename is $3. Refuse to clobber a regular file or an unrelated
-# symlink (never destroy something we didn't create). Returns 1 on conflict.
+# A symlink is OWNED by agent-dice iff its target path ends with the exact
+# role-suffix $2 — e.g. "/bin/agent-dice.ts" or "/hooks/codex-stop.ts". This is
+# stricter than a basename match (an unrelated "/other/agent-dice.ts" is NOT owned)
+# and location-independent (a link into any agent-dice checkout is ours), so it
+# needs no SCRIPT_DIR at uninstall time.
+link_owned_by() {
+    local link="$1" suffix="$2" cur
+    [ -L "$link" ] || return 1
+    cur="$(readlink "$link")"
+    case "$cur" in
+        *"$suffix") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Create $2 -> $1 only if safe to OWN: absent, or an existing symlink already owned
+# (target ends with role-suffix $3). Refuse to clobber a regular file or an
+# unrelated symlink — never destroy something we didn't create. Returns 1 on conflict.
 safe_link() {
-    local target="$1" link="$2" owned="$3"
+    local target="$1" link="$2" suffix="$3"
     if [ -L "$link" ]; then
-        local cur; cur="$(readlink "$link")"
-        if [ "$(basename "$cur")" != "$owned" ]; then
-            print_error "Refusing to overwrite unrelated symlink: $link -> $cur"; return 1
+        if ! link_owned_by "$link" "$suffix"; then
+            print_error "Refusing to overwrite unrelated symlink: $link -> $(readlink "$link")"; return 1
         fi
     elif [ -e "$link" ]; then
         print_error "Refusing to overwrite existing non-symlink file: $link"; return 1
@@ -378,14 +394,13 @@ safe_link() {
     ln -sf "$target" "$link"
 }
 
-# Remove $1 only if it is a symlink whose target basename is $2 (ours). Leave
+# Remove $1 only if it is an OWNED symlink (target ends with role-suffix $2). Leave
 # unrelated files/symlinks in place. Always returns 0.
 safe_unlink() {
-    local link="$1" owned="$2"
+    local link="$1" suffix="$2"
     if [ -L "$link" ]; then
-        local cur; cur="$(readlink "$link")"
-        if [ "$(basename "$cur")" = "$owned" ]; then rm -f "$link"; return 0; fi
-        print_warning "Left unrelated symlink in place: $link -> $cur"
+        if link_owned_by "$link" "$suffix"; then rm -f "$link"; return 0; fi
+        print_warning "Left unrelated symlink in place: $link -> $(readlink "$link")"
     elif [ -e "$link" ]; then
         print_warning "Left non-symlink file in place: $link"
     fi
@@ -394,13 +409,15 @@ safe_unlink() {
 
 # reconcile_codex_hook <event> <hook_path> <present|absent>
 #
-# Drive hooks.json from its observed state to the desired state for ONE owned
-# entry. Ownership is EXACT — a group whose hooks[] contains our canonical command
-# (never a basename substring). present → exactly one canonical
-# {type,command,timeout} owned group, repaired in place at the first owned
-# position (or appended), duplicates collapsed; absent → all owned groups removed.
-# Unrelated entries and their order are conserved. A correct file is left
-# byte-for-byte unchanged (idempotent, no trust churn). On unreadable or
+# Drive hooks.json to the desired state for ONE owned hook ENTRY. Ownership is
+# EXACT — a hook object whose command equals our canonical command (never a
+# basename substring). Reconciliation is per-hook-object, NOT per-group: an owned
+# entry is repaired/removed in place while UNRELATED SIBLINGS in the same hooks[]
+# and the group's own metadata (matcher, …) are conserved; a group is dropped only
+# when it becomes empty. present → exactly one canonical {type,command,timeout}
+# owned entry at the first owned position (or appended), duplicates collapsed;
+# absent → all owned entries removed. Order is conserved. A correct file is left
+# byte-for-byte unchanged (idempotent, no trust churn). On unreadable/uncreatable/
 # unwritable JSON, hooks.json is left untouched and it returns 1.
 reconcile_codex_hook() {
     local event="$1" hook_path="$2" state="$3"
@@ -408,8 +425,10 @@ reconcile_codex_hook() {
     # Nothing to remove from a file that doesn't exist.
     if [ "$state" = "absent" ] && [ ! -f "$CODEX_HOOKS_JSON" ]; then return 0; fi
 
-    mkdir -p "$CODEX_ROOT"
-    [ -f "$CODEX_HOOKS_JSON" ] || echo '{"hooks":{}}' > "$CODEX_HOOKS_JSON"
+    mkdir -p "$CODEX_ROOT" 2>/dev/null || { print_error "Cannot create $CODEX_ROOT (read-only?)"; return 1; }
+    if [ ! -f "$CODEX_HOOKS_JSON" ]; then
+        echo '{"hooks":{}}' > "$CODEX_HOOKS_JSON" 2>/dev/null || { print_error "Cannot create $CODEX_HOOKS_JSON (read-only?)"; return 1; }
+    fi
     if ! jq empty "$CODEX_HOOKS_JSON" 2>/dev/null; then
         print_error "hooks.json is not valid JSON — leaving it untouched"; return 1
     fi
@@ -418,20 +437,29 @@ reconcile_codex_hook() {
     cmd="$(codex_hook_cmd "$hook_path")"
     tmp=$(mktemp)
     if ! jq --arg e "$event" --arg cmd "$cmd" --arg state "$state" --argjson to 10 '
-        def canon: {hooks: [{type: "command", command: $cmd, timeout: $to}]};
+        def canon: {type: "command", command: $cmd, timeout: $to};
         .hooks[$e] = (
             (.hooks[$e] // []) as $groups
-            | (reduce $groups[] as $g ({emitted: false, out: []};
-                if (any($g.hooks[]?; .command == $cmd))                 # owned group (exact)
-                then (if ($state == "present" and (.emitted | not))
-                      then {emitted: true, out: (.out + [canon])}       # first owned → canonical, in place
-                      else {emitted: true, out: .out} end)              # drop (absent, or duplicate)
-                else {emitted: .emitted, out: (.out + [$g])} end)       # unrelated → preserve + order
+            # Walk groups; within each, reconcile individual hook objects. The
+            # first owned object across the whole event becomes canonical in place;
+            # later owned objects are dropped; unrelated siblings are preserved.
+            | (reduce range(0; ($groups | length)) as $gi ({emitted: false, out: []};
+                ($groups[$gi]) as $g
+                | (reduce (($g.hooks // [])[]) as $h ({emitted: .emitted, hooks: []};
+                    if ($h.command == $cmd)
+                    then (if ($state == "present" and (.emitted | not))
+                          then {emitted: true, hooks: (.hooks + [canon])}
+                          else {emitted: true, hooks: .hooks} end)
+                    else {emitted: .emitted, hooks: (.hooks + [$h])} end)) as $gr
+                | { emitted: $gr.emitted,
+                    out: (.out + (if (($gr.hooks | length) > 0)
+                                  then [ ($g | .hooks = $gr.hooks) ]   # preserve group metadata + siblings
+                                  else [] end)) })                     # drop emptied group
               ) as $r
             | if ($state == "present" and ($r.emitted | not))
-              then ($r.out + [canon]) else $r.out end                   # append when none owned
+              then ($r.out + [ {hooks: [canon]} ]) else $r.out end     # append when none owned
         )
-        | if ((.hooks[$e] | length) == 0) then del(.hooks[$e]) else . end
+        | if ((.hooks[$e] // [] | length) == 0) then del(.hooks[$e]) else . end
     ' "$CODEX_HOOKS_JSON" > "$tmp"; then
         rm -f "$tmp"; print_error "Failed to reconcile hooks.json (left untouched)"; return 1
     fi
@@ -441,18 +469,24 @@ reconcile_codex_hook() {
     if cmp -s "$tmp" "$CODEX_HOOKS_JSON"; then
         rm -f "$tmp"; return 0                                          # already canonical — no write, no trust churn
     fi
-    mv "$tmp" "$CODEX_HOOKS_JSON"
+    if ! mv "$tmp" "$CODEX_HOOKS_JSON" 2>/dev/null; then
+        rm -f "$tmp"; print_error "Cannot write $CODEX_HOOKS_JSON (read-only?)"; return 1
+    fi
     return 0
 }
 
-# Structural registration check: a canonical command hook object exists for $1.
+# Structural registration check: EXACTLY ONE owned hook object exists for $1 and
+# it equals the full canonical {type, command, timeout} — noncanonical metadata
+# (e.g. a drifted timeout) or duplicate cardinality fails the check.
 codex_hook_registered() {
     local event="$1" hook_path="$2" cmd
     [ -f "$CODEX_HOOKS_JSON" ] || return 1
     cmd="$(codex_hook_cmd "$hook_path")"
-    jq -e --arg e "$event" --arg cmd "$cmd" \
-        '[.hooks[$e][]?.hooks[]? | select(.type == "command" and .command == $cmd)] | length > 0' \
-        "$CODEX_HOOKS_JSON" >/dev/null 2>&1
+    jq -e --arg e "$event" --arg cmd "$cmd" --argjson to 10 '
+        ([.hooks[$e][]?.hooks[]? | select(.command == $cmd)]) as $owned
+        | ($owned | length) == 1
+          and ($owned[0] == {type: "command", command: $cmd, timeout: $to})
+    ' "$CODEX_HOOKS_JSON" >/dev/null 2>&1
 }
 
 # Install hook + CLI symlinks, ownership-safe. Returns 1 on a conflicting path so
@@ -466,14 +500,14 @@ install_codex() {
     # Symlink hook scripts under the dice base (NOT $CODEX_ROOT/hooks, which may be
     # a user-owned dir). ESM resolves the scripts' `../src/**` imports against the
     # real repo path, so no module symlink is needed.
-    safe_link "$SCRIPT_DIR/hooks/codex-stop.ts" "$CODEX_DICE_BASE/codex-stop.ts" "codex-stop.ts" || return 1
-    safe_link "$SCRIPT_DIR/hooks/codex-session-start.ts" "$CODEX_DICE_BASE/codex-session-start.ts" "codex-session-start.ts" || return 1
+    safe_link "$SCRIPT_DIR/hooks/codex-stop.ts" "$CODEX_DICE_BASE/codex-stop.ts" "/hooks/codex-stop.ts" || return 1
+    safe_link "$SCRIPT_DIR/hooks/codex-session-start.ts" "$CODEX_DICE_BASE/codex-session-start.ts" "/hooks/codex-session-start.ts" || return 1
     print_success "Symlinked Codex hooks to $CODEX_DICE_BASE"
 
     local bin_dir="${HOME}/.local/bin"
     mkdir -p "$bin_dir"
-    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" "agent-dice.ts" || return 1
-    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" "agent-dice.ts" || return 1
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" "/bin/agent-dice.ts" || return 1
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" "/bin/agent-dice.ts" || return 1
     print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
 }
 
@@ -489,25 +523,27 @@ uninstall_codex() {
     local purge="${1:-}"
     print_info "Uninstalling agent-dice for Codex..."
 
-    # Reconcile hooks.json to owned-absent FIRST; gate script-symlink deletion on
-    # a confirmed successful reconcile (don't orphan a registration).
-    if reconcile_codex_hook "Stop" "$CODEX_DICE_BASE/codex-stop.ts" absent \
-        && reconcile_codex_hook "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts" absent; then
-        print_success "Unregistered Codex hooks"
-        safe_unlink "$CODEX_DICE_BASE/codex-stop.ts" "codex-stop.ts"
-        safe_unlink "$CODEX_DICE_BASE/codex-session-start.ts" "codex-session-start.ts"
-        print_success "Removed Codex hook symlinks"
-    else
-        print_error "hooks.json reconcile failed — left hook symlinks in place"
+    # Reconcile hooks.json to owned-absent FIRST. If EITHER reconcile fails, ABORT
+    # the whole uninstall before touching any symlink or data — a failed reconcile
+    # must not fall through to symlink/CLI removal or --purge-data (which would
+    # orphan a live registration and delete the scripts it still points to).
+    if ! reconcile_codex_hook "Stop" "$CODEX_DICE_BASE/codex-stop.ts" absent \
+        || ! reconcile_codex_hook "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts" absent; then
+        print_error "hooks.json reconcile failed — aborting uninstall (nothing removed or purged)"
+        return 1
     fi
+    print_success "Unregistered Codex hooks"
+    safe_unlink "$CODEX_DICE_BASE/codex-stop.ts" "/hooks/codex-stop.ts"
+    safe_unlink "$CODEX_DICE_BASE/codex-session-start.ts" "/hooks/codex-session-start.ts"
+    print_success "Removed Codex hook symlinks"
 
     # Remove the SHARED CLI only when no other host remains (Claude module symlink
     # absent), and only OUR symlink — never an unrelated file.
     if [ -L "$DICE_BASE/cc-dice.ts" ] || [ -e "$DICE_BASE/cc-dice.ts" ]; then
         print_info "Kept shared CLI (Claude host still installed)"
     else
-        safe_unlink "${HOME}/.local/bin/agent-dice" "agent-dice.ts"
-        safe_unlink "${HOME}/.local/bin/cc-dice" "agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/agent-dice" "/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "/bin/agent-dice.ts"
         print_success "Removed shared CLI symlinks (no host remains)"
     fi
 
