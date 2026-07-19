@@ -457,7 +457,13 @@ reconcile_codex_hook() {
 
     local cmd tmp
     cmd="$(codex_hook_cmd "$hook_path")"
-    tmp=$(mktemp)
+    # Temp file as a SIBLING of hooks.json so the final mv is an atomic same-
+    # filesystem rename. A bare `mktemp` lands in /tmp (often a different fs, e.g.
+    # tmpfs), making mv a non-atomic copy+unlink that can leave a half-written,
+    # corrupt hooks.json if interrupted. Fails closed if the dir is read-only.
+    tmp="$(mktemp "${CODEX_HOOKS_JSON}.XXXXXX" 2>/dev/null)" || {
+        print_error "Cannot create a temp file next to $CODEX_HOOKS_JSON (read-only?)"; return 1
+    }
     if ! jq --arg e "$event" --arg cmd "$cmd" --arg state "$state" --argjson to 10 '
         def canon: {type: "command", command: $cmd, timeout: $to};
         .hooks[$e] = (
