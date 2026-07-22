@@ -172,18 +172,16 @@ resolve_local_source_dir() {
 }
 
 resolve_source_dir() {
-    if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/src/index.ts" 2>/dev/null ]; then
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    resolve_local_source_dir && return 0
+
+    # Running via curl or from a location without source files — clone repo
+    if [ -d "$CLONE_DIR/.git" ]; then
+        git -C "$CLONE_DIR" pull --quiet 2>/dev/null || true
     else
-        # Running via curl or from a location without source files — clone repo
-        if [ -d "$CLONE_DIR/.git" ]; then
-            git -C "$CLONE_DIR" pull --quiet 2>/dev/null || true
-        else
-            print_info "Cloning agent-dice..."
-            git clone --quiet --depth 1 "$REPO_URL" "$CLONE_DIR"
-        fi
-        SCRIPT_DIR="$CLONE_DIR"
+        print_info "Cloning agent-dice..."
+        git clone --quiet --depth 1 "$REPO_URL" "$CLONE_DIR"
     fi
+    SCRIPT_DIR="$CLONE_DIR"
 }
 
 # ---- Installation ----
