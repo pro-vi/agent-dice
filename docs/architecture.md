@@ -74,13 +74,17 @@ exit-2 nudge — not like Pi's in-process extension.
 - **Storage:** `${CODEX_HOME:-~/.codex}/dice` (isolated per-host, like Pi). The runtime
   (`codexRoot()` in `src/adapters/codex/host.ts`) and the installer resolve the same
   root; `AGENT_DICE_BASE` overrides it (opt-in sharing with another host).
-- **Depth:** `src/adapters/codex/transcript.ts` counts user turns in the rollout JSONL —
-  lines with `type==="response_item"`, `payload.type==="message"`, `payload.role==="user"`
-  — the analog of Claude's `type==="user" && !toolUseResult`. Codex records the leading
-  `<environment_context>` bootstrap as a user turn, so a session starts with a **constant
-  +1 offset**: the accumulation slope is unchanged (so `accumulationRate` transfers with no
-  recalibration), the first threshold just arrives one turn early; after the first
-  trigger/reset the state rebases.
+- **Depth:** the live Codex `Stop` payload does **not** include `transcript_path` (its fields
+  are `session_id`, `cwd`, `stop_hook_active`, `last_assistant_message`) — so the adapter
+  **locates the rollout by session id** (`findCodexRollout`: newest-first walk of
+  `${CODEX_HOME}/sessions/YYYY/MM/DD` for `rollout-*-<session_id>.jsonl`), then
+  `src/adapters/codex/transcript.ts` counts user turns in it — lines with
+  `type==="response_item"`, `payload.type==="message"`, `payload.role==="user"` — the analog of
+  Claude's `type==="user" && !toolUseResult`. (An explicit `transcript_path`, if a Codex version
+  ever supplies one, still wins.) Codex records the leading `<environment_context>` bootstrap as
+  a user turn, so a session starts with a **constant +1 offset**: the accumulation slope is
+  unchanged (so `accumulationRate` transfers with no recalibration), the first threshold just
+  arrives one turn early; after the first trigger/reset the state rebases.
 - **Hooks:** `hooks/codex-stop.ts` (roll → exit 2 + stderr on trigger, else exit 0,
   fail-open) and `hooks/codex-session-start.ts` (clear `clearOnSessionStart` slots only on
   `source` `startup`/`clear`, skipping `resume`/`compact`).

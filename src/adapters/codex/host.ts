@@ -3,18 +3,25 @@
 /**
  * Codex adapter — builds the DiceHost and resolves the engine's CoreCheckContext
  * from a Codex hook payload. The structural twin of src/adapters/claude-code.ts:
- * Codex's hooks are Claude-Code-compatible (stdin JSON with `session_id` +
- * `transcript_path`, exit-2/stderr nudge), so the ONLY host-specific piece is the
- * rollout depth parser (./transcript). Everything else reuses the Claude file
- * stores — Codex hooks run under Bun, and `getBaseDir()` (src/registry.ts:18)
- * reads `AGENT_DICE_BASE` at call time, so pointing those stores at
+ * Codex's hooks are Claude-compatible (stdin JSON, exit-2/stderr nudge), so the
+ * only host-specific pieces are depth resolution (./transcript over the rollout)
+ * and locating that rollout. Everything else reuses the Claude file stores — Codex
+ * hooks run under Bun, and `getBaseDir()` (src/registry.ts:18) reads
+ * `AGENT_DICE_BASE` at call time, so pointing those stores at
  * `${CODEX_HOME:-~/.codex}/dice` needs one guarded env line, not a second store.
+ *
+ * DEPTH SOURCE (real-Codex correction): the live Codex `Stop` payload does NOT
+ * include `transcript_path` (its fields are session_id, cwd, stop_hook_active,
+ * last_assistant_message). So an accumulator would forever see depth 0. We instead
+ * LOCATE the rollout by session_id — Codex names rollout files
+ * `${CODEX_HOME}/sessions/YYYY/MM/DD/rollout-<ts>-<session_id>.jsonl` — and count
+ * user turns in it. An explicit transcript_path, if ever present, still wins.
  *
  * Resolution is adapter-only (ADR 0001 D1): the engine never reaches for session
  * id or depth.
  */
 
-import { realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CoreCheckContext, DiceHost } from "../../core/contracts";
@@ -27,6 +34,50 @@ export interface CodexHookInput {
   session_id?: string;
   transcript_path?: string;
   source?: string;
+}
+
+/**
+ * Locate the live rollout transcript for a Codex session by its id, since the Stop
+ * payload doesn't carry a path. Walks `${CODEX_HOME}/sessions/YYYY/MM/DD` newest
+ * first (dir names sort chrono-descending, so the current session is found fast)
+ * and returns the first `rollout-*-<sessionId>.jsonl`. Only the hot `.jsonl` (not a
+ * cold `.jsonl.zst`) is matched — the active session is always uncompressed.
+ * Returns undefined if none is found or the sessions dir is absent.
+ */
+export function findCodexRollout(sessionId: string): string | undefined {
+  const root = join(codexRoot(), "sessions");
+  if (!existsSync(root)) return undefined;
+  const suffix = `-${sessionId}.jsonl`;
+  const dirsDesc = (d: string): string[] => {
+    try {
+      return readdirSync(d).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const isDir = (p: string): boolean => {
+    try {
+      return statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  for (const y of dirsDesc(root)) {
+    const yp = join(root, y);
+    if (!isDir(yp)) continue;
+    for (const m of dirsDesc(yp)) {
+      const mp = join(yp, m);
+      if (!isDir(mp)) continue;
+      for (const dd of dirsDesc(mp)) {
+        const dp = join(mp, dd);
+        if (!isDir(dp)) continue;
+        for (const f of dirsDesc(dp)) {
+          if (f.startsWith("rollout-") && f.endsWith(suffix)) return join(dp, f);
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -113,7 +164,11 @@ export function resolveCodexContext(input: CodexHookInput): CoreCheckContext {
     sessionId,
     async getCurrentDepth() {
       if (!resolved) {
-        depth = input.transcript_path ? await countExchanges(input.transcript_path) : undefined;
+        // Explicit transcript_path wins; otherwise locate the rollout by session id
+        // (the live Codex Stop payload omits transcript_path). Undefined when no
+        // rollout is found → engine applies the per-op default.
+        const path = input.transcript_path ?? (input.session_id ? findCodexRollout(input.session_id) : undefined);
+        depth = path ? await countExchanges(path) : undefined;
         resolved = true;
       }
       return depth;

@@ -15,8 +15,9 @@ import { type Check, assert, assertEqual } from "./harness";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { mkdirSync } from "fs";
 import * as engine from "../../src/core/engine";
-import { createCodexHost, resolveCodexContext } from "../../src/adapters/codex/host";
+import { createCodexHost, resolveCodexContext, findCodexRollout } from "../../src/adapters/codex/host";
 import { registerSlot } from "../../src/registry";
 import { saveState, loadState } from "../../src/state";
 import { hasCooldown } from "../../src/cooldown";
@@ -96,15 +97,46 @@ export const checks: Check[] = [
       }),
   },
   {
-    name: "codex-wiring: no transcript_path → depth undefined (accumulator reads default to 0, no dice)",
+    name: "codex-wiring: no transcript_path AND no locatable rollout → depth undefined (0 dice, no spurious trigger)",
     fn: () =>
       withCodexBase(async () => {
         await registerSlot({ name: "a", die: 20, target: 20, type: "accumulator", accumulationRate: 7, onTrigger: { message: "m" } });
-        const ctx = resolveCodexContext({ session_id: "s4" }); // no transcript_path
-        assertEqual(await ctx.getCurrentDepth(), undefined, "no transcript → depth undefined");
+        const ctx = resolveCodexContext({ session_id: "no-such-session" }); // no path, no rollout on disk
+        assertEqual(await ctx.getCurrentDepth(), undefined, "no transcript + no rollout → depth undefined");
         const host = createCodexHost();
         const results = await engine.checkAllSlots(host, ctx);
-        assert(results.find((r) => r.slotName === "a")?.diceCount === 0, "depth 0 default → 0 dice, no spurious trigger");
+        assert(results.find((r) => r.slotName === "a")?.diceCount === 0, "depth 0 default → 0 dice");
       }),
+  },
+  {
+    name: "codex-wiring: depth is reconstructed from session_id when the Stop payload omits transcript_path (real-Codex path)",
+    fn: async () => {
+      // The live Codex Stop payload has no transcript_path — depth must come from
+      // locating ${CODEX_HOME}/sessions/YYYY/MM/DD/rollout-*-<session_id>.jsonl.
+      const prevHome = process.env.CODEX_HOME;
+      const home = mkdtempSync(join(tmpdir(), "cc-dice-codex-home-"));
+      process.env.CODEX_HOME = home;
+      const sid = "019f4d75-c99d-7aa0-a9d7-698bb6e5b7df";
+      const day = join(home, "sessions", "2026", "07", "19");
+      mkdirSync(day, { recursive: true });
+      // 12 user turns interleaved with assistant/tool lines that must NOT count
+      const lines: string[] = [JSON.stringify({ type: "session_meta", payload: {} })];
+      for (let i = 0; i < 12; i++) {
+        lines.push(JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `q${i}` }] } }));
+        lines.push(JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [] } }));
+        lines.push(JSON.stringify({ type: "response_item", payload: { type: "function_call_output" } }));
+      }
+      writeFileSync(join(day, `rollout-2026-07-19T19-51-49-${sid}.jsonl`), lines.join("\n"));
+      try {
+        assert(findCodexRollout(sid)?.endsWith(`${sid}.jsonl`) === true, "findCodexRollout locates the rollout by session id");
+        const depth = await resolveCodexContext({ session_id: sid }).getCurrentDepth(); // NO transcript_path
+        assertEqual(depth, 12, "depth reconstructed from the session's rollout (user turns only)");
+        assertEqual(findCodexRollout("nonexistent-session"), undefined, "unknown session id → undefined");
+      } finally {
+        if (prevHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = prevHome;
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
   },
 ];
