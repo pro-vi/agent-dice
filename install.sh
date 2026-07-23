@@ -11,6 +11,12 @@ DICE_BASE="${HOME}/.claude/dice"
 HOOKS_DIR="${HOME}/.claude/hooks"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
 
+# Codex host paths. One root, resolved the same way the runtime does
+# (codexRoot() in src/adapters/codex/host.ts): CODEX_HOME if set, else ~/.codex.
+CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
+CODEX_DICE_BASE="$CODEX_ROOT/dice"           # data + hook-script symlinks live here
+CODEX_HOOKS_JSON="$CODEX_ROOT/hooks.json"    # user-layer hook registration
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -153,19 +159,29 @@ EOFJSON
 
 # ---- Source resolution ----
 
-resolve_source_dir() {
-    if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/src/index.ts" 2>/dev/null ]; then
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    else
-        # Running via curl or from a location without source files — clone repo
-        if [ -d "$CLONE_DIR/.git" ]; then
-            git -C "$CLONE_DIR" pull --quiet 2>/dev/null || true
-        else
-            print_info "Cloning agent-dice..."
-            git clone --quiet --depth 1 "$REPO_URL" "$CLONE_DIR"
-        fi
-        SCRIPT_DIR="$CLONE_DIR"
+# Set SCRIPT_DIR from the local checkout WITHOUT ever cloning. Used by uninstall,
+# which must know this install's exact managed targets (for strict symlink
+# ownership) but must never fetch anything. Returns 1 if no local source is found.
+resolve_local_source_dir() {
+    local d
+    if [ -n "${BASH_SOURCE[0]:-}" ]; then
+        d="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+        if [ -n "$d" ] && [ -f "$d/src/index.ts" ]; then SCRIPT_DIR="$d"; return 0; fi
     fi
+    return 1
+}
+
+resolve_source_dir() {
+    resolve_local_source_dir && return 0
+
+    # Running via curl or from a location without source files — clone repo
+    if [ -d "$CLONE_DIR/.git" ]; then
+        git -C "$CLONE_DIR" pull --quiet 2>/dev/null || true
+    else
+        print_info "Cloning agent-dice..."
+        git clone --quiet --depth 1 "$REPO_URL" "$CLONE_DIR"
+    fi
+    SCRIPT_DIR="$CLONE_DIR"
 }
 
 # ---- Installation ----
@@ -189,12 +205,20 @@ install_dice() {
     ln -sf "$SCRIPT_DIR/hooks/session-start.ts" "$HOOKS_DIR/dice-session-start.ts"
     print_success "Symlinked session-start hook to $HOOKS_DIR/dice-session-start.ts"
 
-    # Symlink CLI
-    local bin_dir="${HOME}/.local/bin"
+    # Symlink the SHARED CLI ownership-safely (it is a shared-resource contract with
+    # the Codex host): never clobber an unrelated file/symlink. Best-effort — the
+    # Claude hooks work without it, so a conflict warns rather than aborts, and the
+    # message reflects whether the link actually happened.
+    local bin_dir="${HOME}/.local/bin" cli_ok=1
     mkdir -p "$bin_dir"
-    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice"
-    ln -sf "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice"
-    print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
+    migrate_legacy_cli   # upgrade from a legacy cc-dice CLI link before (re)linking
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" || cli_ok=0
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" || cli_ok=0
+    if [ "$cli_ok" -eq 1 ]; then
+        print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
+    else
+        print_warning "CLI not fully linked — a conflicting file exists at $bin_dir (resolve it, then re-run)"
+    fi
 }
 
 register_hooks() {
@@ -318,12 +342,21 @@ uninstall() {
     rm -f "$HOOKS_DIR/dice-session-start.ts"
     print_success "Removed hooks"
 
-    # Remove CLI (both the agent-dice command and the cc-dice alias)
-    rm -f "${HOME}/.local/bin/agent-dice" "${HOME}/.local/bin/cc-dice"
-    print_success "Removed CLI symlinks"
-
-    # Remove module symlink
+    # Remove module symlink (Claude's own marker)
     rm -f "$DICE_BASE/cc-dice.ts"
+
+    # Locate this checkout (no clone) for strict CLI ownership.
+    resolve_local_source_dir || print_warning "Could not locate the agent-dice source; CLI left in place"
+
+    # Shared CLI: remove only when no other host remains (Codex absent), and only
+    # our own symlink (exact target) — never an unrelated file. Symmetric with uninstall_codex.
+    if [ -L "$CODEX_DICE_BASE/codex-stop.ts" ] || [ -e "$CODEX_DICE_BASE/codex-stop.ts" ]; then
+        print_info "Kept shared CLI (Codex host still installed)"
+    else
+        safe_unlink "${HOME}/.local/bin/agent-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
+        print_success "Removed CLI symlinks"
+    fi
 
     echo ""
     read -p "Remove dice data ($DICE_BASE)? [y/N] " -n 1 -r
@@ -338,14 +371,389 @@ uninstall() {
     print_success "Uninstall complete"
 }
 
+# ============================================================================
+# Codex host: hook registration lives in $CODEX_ROOT/hooks.json (user layer).
+# The block shape matches Claude's settings.json hooks block. A single reconciler
+# drives hooks.json toward a canonical desired state (one owned entry present, or
+# absent), transactionally — so registration is idempotent (byte-for-byte no-op
+# when already correct, never churning Codex's index-sensitive hook trust) and
+# unrelated entries + their order are always conserved.
+# ============================================================================
+
+# Canonical command string for a hook script path: `bun '<path>'`.
+codex_hook_cmd() { echo "bun $(jq -nr --arg p "$1" '$p | @sh')"; }
+
+# Normalize CODEX_ROOT to ONE canonical absolute/physical path, then derive the
+# data + hooks paths from it. Collapses aliases (trailing slash, "/.", "//", a
+# symlinked root) to a single identity so install / uninstall / check always agree
+# — the TS runtime resolves the same way (realpathSync in codexRoot, host.ts). An
+# absolute CODEX_HOME is required (a relative root is unsafe: it resolves against
+# the caller's cwd at install, runtime, and uninstall independently).
+# canonicalize_codex_root [--create]
+# With --create (install), the root dir is created AFTER the relative-path reject,
+# so `pwd -P` always applies — physical resolution is used on the very first install
+# too, and every later run agrees (crucial where an ancestor is a symlink, e.g.
+# macOS /var -> /private/var). Without it (check/uninstall), an existing dir is
+# resolved physically; a missing one falls back to a lexical collapse (there is
+# nothing installed to act on anyway).
+canonicalize_codex_root() {
+    local raw="${CODEX_HOME:-$HOME/.codex}"
+    case "$raw" in
+        /*) ;;
+        *) print_error "CODEX_HOME must be an absolute path (got '$raw')"; return 1 ;;
+    esac
+    if [ "${1:-}" = "--create" ]; then
+        mkdir -p "$raw" 2>/dev/null || true
+    fi
+    if [ -d "$raw" ]; then
+        CODEX_ROOT="$(cd "$raw" && pwd -P)"     # physical: resolves symlinks, "/.", "//", trailing slash
+    else
+        # Dir not present: lexically collapse "//", "/./", trailing "/." and "/".
+        CODEX_ROOT="$(printf '%s' "$raw" | sed -e 's://*:/:g' -e 's:/\./:/:g' -e 's:/\.$::' -e 's:/$::')"
+        [ -z "$CODEX_ROOT" ] && CODEX_ROOT="/"
+    fi
+    CODEX_DICE_BASE="$CODEX_ROOT/dice"
+    CODEX_HOOKS_JSON="$CODEX_ROOT/hooks.json"
+}
+
+# A symlink is OWNED by this install iff its target is EXACTLY the file we manage
+# ($2, the exact absolute target). Same-file (inode) check when both exist, exact
+# stored-string when the link dangles. STRICT on purpose: an unrelated
+# ".../bin/agent-dice.ts" from another tree is NOT ours (path shape is not
+# ownership), and a moved-checkout link is a conflict to resolve manually — never
+# a silent clobber. Cross-checkout migration, if ever wanted, gets an explicit
+# marker/force flag, not inferred ownership.
+link_owned_by() {
+    local link="$1" target="$2"
+    [ -L "$link" ] || return 1
+    if [ -e "$link" ] && [ -e "$target" ]; then
+        [ "$link" -ef "$target" ]      # resolves both; true only for the same file
+    else
+        [ "$(readlink "$link")" = "$target" ]   # dangling link: exact stored target
+    fi
+}
+
+# Create $2 -> $1 only if safe to OWN: absent, or an existing symlink that already
+# points exactly at $1. Refuse to clobber a regular file or any other symlink —
+# never destroy something we didn't create. Returns 1 on conflict.
+safe_link() {
+    local target="$1" link="$2"
+    if [ -L "$link" ]; then
+        if link_owned_by "$link" "$target"; then return 0; fi   # already ours & correct → no-op
+        print_error "Refusing to overwrite symlink not managed by this install: $link -> $(readlink "$link")"; return 1
+    elif [ -e "$link" ]; then
+        print_error "Refusing to overwrite existing non-symlink file: $link"; return 1
+    fi
+    # Non-clobbering create: `ln` WITHOUT -f, so a file that races into the path
+    # between the check above and here surfaces as a conflict (EEXIST) rather than
+    # being silently replaced. The create is the deciding atomic operation.
+    ln -s "$target" "$link"
+}
+
+# Remove $1 only if it is a symlink pointing exactly at the managed target $2.
+# Leave anything else in place. Always returns 0.
+safe_unlink() {
+    local link="$1" target="$2"
+    if [ -L "$link" ]; then
+        if link_owned_by "$link" "$target"; then rm -f "$link"; return 0; fi
+        print_warning "Left symlink not managed by this install: $link -> $(readlink "$link")"
+    elif [ -e "$link" ]; then
+        print_warning "Left non-symlink file in place: $link"
+    fi
+    return 0
+}
+
+# One-time migration for users upgrading from the old "cc-dice" install. The
+# rename cc-dice -> agent-dice moved the clone dir; the shared CLI's strict
+# ownership check would otherwise REFUSE to repoint the command (it sees the old
+# path as not-ours), silently leaving `agent-dice` on the pre-rename code. Remove a
+# CLI symlink that points into a legacy `.../cc-dice/` checkout so the fresh, owned
+# link can be created against this checkout. Only touches our own known links.
+migrate_legacy_cli() {
+    local bin_dir="${HOME}/.local/bin" link cur migrated=0
+    for link in "$bin_dir/agent-dice" "$bin_dir/cc-dice"; do
+        [ -L "$link" ] || continue
+        cur="$(readlink "$link")"
+        case "$cur" in
+            */cc-dice/bin/agent-dice.ts | */cc-dice/bin/cc-dice.ts) rm -f "$link"; migrated=1 ;;
+        esac
+    done
+    if [ "$migrated" -eq 1 ]; then
+        print_info "Migrated a legacy 'cc-dice' CLI link → relinking to this checkout"
+        [ -d "${HOME}/.local/share/cc-dice" ] && print_info "(the old clone ~/.local/share/cc-dice is now unused — safe to remove)"
+    fi
+}
+
+# reconcile_codex_hook <event> <hook_path> <present|absent>
+#
+# Drive hooks.json to the desired state for ONE owned hook ENTRY. Ownership is
+# EXACT — a hook object whose command equals our canonical command (never a
+# basename substring). Reconciliation is per-hook-object, NOT per-group: an owned
+# entry is repaired/removed in place while UNRELATED SIBLINGS in the same hooks[]
+# and the group's own metadata (matcher, …) are conserved; a group is dropped only
+# when it becomes empty. present → exactly one canonical {type,command,timeout}
+# owned entry at the first owned position (or appended), duplicates collapsed;
+# absent → all owned entries removed. Order is conserved. A semantically-correct
+# file is left byte-for-byte unchanged ONCE NORMALIZED — the first run on a
+# hand-edited-but-valid file may reformat it (jq reserializes), and only then is a
+# re-run a true no-op. Assumes Codex's valid schema (arrays of command groups);
+# non-array hook shapes are not repaired. On unreadable/uncreatable/unwritable
+# JSON, hooks.json is left untouched and it returns 1. NOTE: each event write is
+# atomic, but a full install/uninstall reconciles Stop and SessionStart in TWO
+# separate writes — the PAIR is not one transaction (a manual-installer edge).
+reconcile_codex_hook() {
+    local event="$1" hook_path="$2" state="$3"
+
+    # Nothing to remove from a file that doesn't exist.
+    if [ "$state" = "absent" ] && [ ! -f "$CODEX_HOOKS_JSON" ]; then return 0; fi
+
+    mkdir -p "$CODEX_ROOT" 2>/dev/null || { print_error "Cannot create $CODEX_ROOT (read-only?)"; return 1; }
+    if [ ! -f "$CODEX_HOOKS_JSON" ]; then
+        echo '{"hooks":{}}' > "$CODEX_HOOKS_JSON" 2>/dev/null || { print_error "Cannot create $CODEX_HOOKS_JSON (read-only?)"; return 1; }
+    fi
+    if ! jq empty "$CODEX_HOOKS_JSON" 2>/dev/null; then
+        print_error "hooks.json is not valid JSON — leaving it untouched"; return 1
+    fi
+
+    local cmd tmp write_target
+    cmd="$(codex_hook_cmd "$hook_path")"
+    # Write THROUGH a symlinked hooks.json (dotfiles / stow / chezmoi): resolve to
+    # the real target so the atomic rename replaces THAT file and preserves the
+    # link. A non-symlink resolves to itself; a resolution failure falls back to the
+    # path (so we never lose the ability to write).
+    write_target="$CODEX_HOOKS_JSON"
+    if [ -L "$CODEX_HOOKS_JSON" ]; then
+        local _lt _dir
+        _lt="$(readlink "$CODEX_HOOKS_JSON")"
+        _dir="$(cd "$(dirname "$CODEX_HOOKS_JSON")" 2>/dev/null && cd "$(dirname "$_lt")" 2>/dev/null && pwd -P)"
+        [ -n "$_dir" ] && write_target="$_dir/$(basename "$_lt")"
+    fi
+    # Temp file as a SIBLING of the write target so the final mv is an atomic same-
+    # filesystem rename. A bare `mktemp` lands in /tmp (often a different fs, e.g.
+    # tmpfs), making mv a non-atomic copy+unlink that can leave a half-written,
+    # corrupt file if interrupted. Fails closed if the dir is read-only.
+    tmp="$(mktemp "${write_target}.XXXXXX" 2>/dev/null)" || {
+        print_error "Cannot create a temp file next to $write_target (read-only?)"; return 1
+    }
+    if ! jq --arg e "$event" --arg cmd "$cmd" --arg state "$state" --argjson to 10 '
+        def canon: {type: "command", command: $cmd, timeout: $to};
+        .hooks[$e] = (
+            (.hooks[$e] // []) as $groups
+            # Walk groups; within each, reconcile individual hook objects. The
+            # first owned object across the whole event becomes canonical in place;
+            # later owned objects are dropped; unrelated siblings are preserved.
+            | (reduce range(0; ($groups | length)) as $gi ({emitted: false, out: []};
+                ($groups[$gi]) as $g
+                | (reduce (($g.hooks // [])[]) as $h ({emitted: .emitted, hooks: []};
+                    if ($h.command == $cmd)
+                    then (if ($state == "present" and (.emitted | not))
+                          then {emitted: true, hooks: (.hooks + [canon])}
+                          else {emitted: true, hooks: .hooks} end)
+                    else {emitted: .emitted, hooks: (.hooks + [$h])} end)) as $gr
+                | { emitted: $gr.emitted,
+                    out: (.out + (if (($gr.hooks | length) > 0)
+                                  then [ ($g | .hooks = $gr.hooks) ]   # preserve group metadata + siblings
+                                  else [] end)) })                     # drop emptied group
+              ) as $r
+            | if ($state == "present" and ($r.emitted | not))
+              then ($r.out + [ {hooks: [canon]} ]) else $r.out end     # append when none owned
+        )
+        | if ((.hooks[$e] // [] | length) == 0) then del(.hooks[$e]) else . end
+    ' "$CODEX_HOOKS_JSON" > "$tmp"; then
+        rm -f "$tmp"; print_error "Failed to reconcile hooks.json (left untouched)"; return 1
+    fi
+    if ! jq empty "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"; print_error "reconcile produced invalid JSON (left untouched)"; return 1
+    fi
+    if cmp -s "$tmp" "$write_target"; then
+        rm -f "$tmp"; return 0                                          # already canonical — no write, no trust churn
+    fi
+    if ! mv "$tmp" "$write_target" 2>/dev/null; then
+        rm -f "$tmp"; print_error "Cannot write $write_target (read-only?)"; return 1
+    fi
+    return 0
+}
+
+# Structural registration check: EXACTLY ONE owned hook object exists for $1 and
+# it equals the full canonical {type, command, timeout} — noncanonical metadata
+# (e.g. a drifted timeout) or duplicate cardinality fails the check.
+codex_hook_registered() {
+    local event="$1" hook_path="$2" cmd
+    [ -f "$CODEX_HOOKS_JSON" ] || return 1
+    cmd="$(codex_hook_cmd "$hook_path")"
+    jq -e --arg e "$event" --arg cmd "$cmd" --argjson to 10 '
+        ([.hooks[$e][]?.hooks[]? | select(.command == $cmd)]) as $owned
+        | ($owned | length) == 1
+          and ($owned[0] == {type: "command", command: $cmd, timeout: $to})
+    ' "$CODEX_HOOKS_JSON" >/dev/null 2>&1
+}
+
+# Install hook + CLI symlinks, ownership-safe. Returns 1 on a conflicting path so
+# the caller aborts BEFORE touching hooks.json.
+install_codex() {
+    print_info "Installing agent-dice for Codex..."
+
+    # Ownership marker: stamp ONLY when this installer creates the dice dir. A
+    # pre-existing dir is never claimed (its contents may be the user's), so
+    # --purge-data will refuse to delete it later.
+    local pre_existing=false
+    [ -d "$CODEX_DICE_BASE" ] && pre_existing=true
+    mkdir -p "$CODEX_DICE_BASE/state"
+    if $pre_existing; then
+        print_info "Using existing $CODEX_DICE_BASE (no ownership marker — --purge-data will refuse it)"
+    else
+        : > "$CODEX_DICE_BASE/.agent-dice"      # we created it → safe to purge later
+        print_success "Created $CODEX_DICE_BASE"
+    fi
+
+    # Symlink hook scripts under the dice base (NOT $CODEX_ROOT/hooks, which may be
+    # a user-owned dir). ESM resolves the scripts' `../src/**` imports against the
+    # real repo path, so no module symlink is needed.
+    safe_link "$SCRIPT_DIR/hooks/codex-stop.ts" "$CODEX_DICE_BASE/codex-stop.ts" || return 1
+    safe_link "$SCRIPT_DIR/hooks/codex-session-start.ts" "$CODEX_DICE_BASE/codex-session-start.ts" || return 1
+    print_success "Symlinked Codex hooks to $CODEX_DICE_BASE"
+
+    local bin_dir="${HOME}/.local/bin"
+    mkdir -p "$bin_dir"
+    migrate_legacy_cli   # upgrade from a legacy cc-dice CLI link before (re)linking
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/agent-dice" || return 1
+    safe_link "$SCRIPT_DIR/bin/agent-dice.ts" "$bin_dir/cc-dice" || return 1
+    print_success "Symlinked CLI to $bin_dir/agent-dice (and cc-dice alias)"
+}
+
+register_codex_hooks() {
+    echo ""
+    print_info "Reconciling Codex hooks in $CODEX_HOOKS_JSON..."
+    reconcile_codex_hook "Stop" "$CODEX_DICE_BASE/codex-stop.ts" present || return 1
+    reconcile_codex_hook "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts" present || return 1
+    print_success "Registered Stop + SessionStart hooks (canonical, idempotent)"
+}
+
+uninstall_codex() {
+    local purge="${1:-}"
+    print_info "Uninstalling agent-dice for Codex..."
+
+    # Locate this checkout (no clone) so ownership is judged against exact managed
+    # targets. If it can't be found, symlink removal is skipped (safe): the
+    # strict check leaves anything it can't positively confirm as ours.
+    if ! resolve_local_source_dir; then
+        print_warning "Could not locate the agent-dice source; symlinks left in place (run uninstall from the checkout)"
+    fi
+
+    # Reconcile hooks.json to owned-absent FIRST. If EITHER reconcile fails, ABORT
+    # the whole uninstall before touching any symlink or data — a failed reconcile
+    # must not fall through to symlink/CLI removal or --purge-data (which would
+    # orphan a live registration and delete the scripts it still points to).
+    if ! reconcile_codex_hook "Stop" "$CODEX_DICE_BASE/codex-stop.ts" absent \
+        || ! reconcile_codex_hook "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts" absent; then
+        print_error "hooks.json reconcile failed — aborting uninstall (nothing removed or purged)"
+        return 1
+    fi
+    print_success "Unregistered Codex hooks"
+    safe_unlink "$CODEX_DICE_BASE/codex-stop.ts" "$SCRIPT_DIR/hooks/codex-stop.ts"
+    safe_unlink "$CODEX_DICE_BASE/codex-session-start.ts" "$SCRIPT_DIR/hooks/codex-session-start.ts"
+    print_success "Removed Codex hook symlinks"
+
+    # Remove the SHARED CLI only when no other host remains (Claude module symlink
+    # absent), and only OUR symlink — never an unrelated file.
+    if [ -L "$DICE_BASE/cc-dice.ts" ] || [ -e "$DICE_BASE/cc-dice.ts" ]; then
+        print_info "Kept shared CLI (Claude host still installed)"
+    else
+        safe_unlink "${HOME}/.local/bin/agent-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
+        safe_unlink "${HOME}/.local/bin/cc-dice" "$SCRIPT_DIR/bin/agent-dice.ts"
+        print_success "Removed shared CLI symlinks (no host remains)"
+    fi
+
+    if [ "$purge" = "--purge-data" ]; then
+        # Gate the recursive delete on the ownership marker: purge ONLY a dice dir
+        # this installer created. Refuse (never rm -rf) an unmarked or foreign dir.
+        if [ -f "$CODEX_DICE_BASE/.agent-dice" ]; then
+            rm -rf "$CODEX_DICE_BASE"
+            print_success "Purged Codex dice data ($CODEX_DICE_BASE)"
+        else
+            print_warning "Refusing --purge-data: no agent-dice ownership marker in $CODEX_DICE_BASE"
+            print_info "(this installer did not create it — remove it by hand if you're sure)"
+        fi
+    else
+        print_info "Kept Codex dice data at $CODEX_DICE_BASE (use 'uninstall codex --purge-data' to remove)"
+    fi
+
+    print_success "Codex uninstall complete"
+}
+
+# Verify the Codex install. Missing scripts/registration/CLI are ERRORS (a
+# nonfunctional install must not report OK); exits nonzero when any error is found.
+show_check_codex() {
+    echo ""
+    echo "agent-dice (Codex) Installation Check"
+    echo ""
+
+    if [ ! -d "$CODEX_DICE_BASE" ] && [ ! -f "$CODEX_HOOKS_JSON" ]; then
+        echo -e "  ${BLUE}Not installed.${NC} Run ${BLUE}./install.sh codex${NC} to install."
+        echo ""
+        exit 0
+    fi
+
+    local errors=0
+
+    if [ -d "$CODEX_DICE_BASE" ]; then
+        echo -e "  ${GREEN}ok${NC} Dice base: $CODEX_DICE_BASE"
+    else
+        echo -e "  ${RED}err${NC} Dice base missing"; errors=$((errors + 1))
+    fi
+
+    # Hook scripts must resolve to live targets.
+    for hook in codex-stop codex-session-start; do
+        if [ -e "$CODEX_DICE_BASE/$hook.ts" ]; then
+            echo -e "  ${GREEN}ok${NC} $hook hook file"
+        else
+            echo -e "  ${RED}err${NC} $hook hook missing or broken"; errors=$((errors + 1))
+        fi
+    done
+
+    # Structural registration (canonical command object), not a substring grep.
+    if codex_hook_registered "Stop" "$CODEX_DICE_BASE/codex-stop.ts"; then
+        echo -e "  ${GREEN}ok${NC} Stop hook registered in hooks.json"
+    else
+        echo -e "  ${RED}err${NC} Stop hook not registered (canonical object)"; errors=$((errors + 1))
+    fi
+    if codex_hook_registered "SessionStart" "$CODEX_DICE_BASE/codex-session-start.ts"; then
+        echo -e "  ${GREEN}ok${NC} SessionStart hook registered in hooks.json"
+    else
+        echo -e "  ${RED}err${NC} SessionStart hook not registered (canonical object)"; errors=$((errors + 1))
+    fi
+
+    if [ -L "${HOME}/.local/bin/agent-dice" ] && [ -e "${HOME}/.local/bin/agent-dice" ]; then
+        echo -e "  ${GREEN}ok${NC} CLI symlink"
+    else
+        echo -e "  ${RED}err${NC} CLI missing or broken"; errors=$((errors + 1))
+    fi
+
+    echo ""
+    echo -e "  ${BLUE}note${NC} Codex requires trusting untrusted command hooks. On first run,"
+    echo -e "       approve the hook when prompted (a persisted approval), or pass"
+    echo -e "       ${BLUE}--dangerously-bypass-hook-trust${NC} for a single non-interactive invocation."
+    echo ""
+
+    if [ $errors -eq 0 ]; then
+        echo -e "${GREEN}Status: OK${NC}"; echo ""; exit 0
+    else
+        echo -e "${RED}Status: $errors error(s)${NC}"; echo ""; exit 1
+    fi
+}
+
 show_usage() {
     echo "Usage: ./install.sh [command]"
     echo ""
     echo "Commands:"
-    echo "  (default)     Install agent-dice"
-    echo "  uninstall     Remove installation"
-    echo "  check         Verify installation"
-    echo "  help          Show this help"
+    echo "  (default)              Install agent-dice for Claude Code"
+    echo "  codex                  Install agent-dice for Codex (~/.codex)"
+    echo "  uninstall              Remove the Claude Code installation"
+    echo "  uninstall codex        Remove the Codex installation (keeps data)"
+    echo "  uninstall codex --purge-data   Remove the Codex installation AND its data"
+    echo "  check                  Verify the Claude Code installation"
+    echo "  check codex            Verify the Codex installation"
+    echo "  help                   Show this help"
 }
 
 # ---- Main ----
@@ -375,11 +783,45 @@ case "${1:-}" in
         fi
         echo ""
         ;;
+    codex)
+        if ! check_dependencies; then
+            exit 1
+        fi
+        resolve_source_dir
+        canonicalize_codex_root --create || exit 1   # reject relative first, then create + physically resolve
+        if ! install_codex; then
+            print_error "Codex install aborted (conflicting path) — nothing registered."
+            exit 1
+        fi
+        if ! register_codex_hooks; then
+            print_error "Hook registration failed — hooks.json left untouched."
+            exit 1
+        fi
+        echo ""
+        print_success "Codex installation complete!"
+        echo ""
+        print_info "Next steps:"
+        echo "  1. Register a slot:  AGENT_DICE_BASE=\"\${CODEX_HOME:-\$HOME/.codex}/dice\" agent-dice register my-slot --message 'Triggered!'"
+        echo "  2. Verify:           ./install.sh check codex"
+        echo "  3. Codex will ask to trust the hook on first run — approve it (or pass"
+        echo "     --dangerously-bypass-hook-trust once for non-interactive use)."
+        echo ""
+        ;;
     uninstall|-u)
-        uninstall
+        if [ "${2:-}" = "codex" ]; then
+            canonicalize_codex_root || exit 1
+            uninstall_codex "${3:-}"
+        else
+            uninstall
+        fi
         ;;
     check|-c)
-        show_check
+        if [ "${2:-}" = "codex" ]; then
+            canonicalize_codex_root || exit 1
+            show_check_codex
+        else
+            show_check
+        fi
         ;;
     help|--help|-h)
         show_usage

@@ -1,9 +1,10 @@
 /**
  * C9: Public docs conformance.
  *
- * Docs must describe cc-dice as the Claude facade over a reusable core, and must
- * NOT claim a Pi (or other) adapter ships now. Kept structural (does the doc say
- * the right things) rather than a brittle exact-string match.
+ * Docs must describe agent-dice as the facade over a reusable core, and must
+ * document the SHIPPED hosts. Claude, Pi, AND Codex now ship (Codex is a
+ * hook-based host — the Claude twin); the docs must say so. Kept structural
+ * (does the doc say the right things) rather than a brittle exact-string match.
  */
 
 import { type Check, assert } from "./harness";
@@ -35,18 +36,26 @@ export const checks: Check[] = [
     },
   },
   {
-    name: "C9: Pi is a shipped adapter; no doc claims a Codex adapter ships (it's researched, not built)",
+    name: "C9: Codex is documented as a SHIPPED host — positive install language, no 'not yet built' hedge",
     fn: () => {
-      // Pi now ships, so claiming "Pi is supported" is correct. The live overclaim
-      // risk is Codex: a positive ship-claim on a line mentioning codex, with no
-      // negating/future qualifier on that line, is an overclaim (negation-aware).
-      const positive = /\b(ships|shipped|available now|supported|implemented)\b/i;
-      const negated = /\b(not|no|never|future|deferred|planned|yet|would|could|only|today|research)\b/i;
-      for (const p of ["README.md", "docs/architecture.md", "CLAUDE.md", "docs/adr/0001-host-agnostic-core-and-adapters.md"]) {
-        const text = read(p);
-        for (const line of text.split("\n")) {
-          if (/\bcodex\b/i.test(line) && positive.test(line) && !negated.test(line)) {
-            throw new Error(`${p} claims a Codex adapter ships now: "${line.trim()}"`);
+      // Mere presence of the word "codex" is too weak: pristine main satisfied that
+      // while saying Codex was "researched but not yet built". This guard requires
+      // POSITIVE shipped/install language and REJECTS negated/future claims, so it
+      // fails on the pre-ship docs and only passes once Codex actually ships.
+      const arch = read("docs/architecture.md").toLowerCase();
+      for (const host of ["claude", "pi", "codex"]) {
+        assert(arch.includes(host), `architecture.md should document the ${host} host (three hosts now ship)`);
+      }
+      // README must carry the real install path — only true once it ships.
+      const readme = read("README.md");
+      assert(/\.\/install\.sh\s+codex/.test(readme), "README should document the `./install.sh codex` install path");
+
+      // No doc may hedge Codex as unbuilt/future on a line that mentions it.
+      const future = /\b(not\s+(yet\s+)?built|researched\s+but\s+not|not\s+(yet\s+)?shipped|future\s+work|planned|unbuilt)\b/i;
+      for (const p of ["README.md", "docs/architecture.md", "CLAUDE.md"]) {
+        for (const line of read(p).split("\n")) {
+          if (/\bcodex\b/i.test(line) && future.test(line)) {
+            throw new Error(`${p} still hedges Codex as unbuilt/future: "${line.trim()}"`);
           }
         }
       }

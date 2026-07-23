@@ -1296,3 +1296,310 @@ EOF
     assert_success
     assert_output --partial "0 failed"
 }
+
+# ============================================================================
+# Codex hook probe (U5): the codex-stop / codex-session-start scripts honor the
+# exit-2/stderr nudge contract and fail open. Model-free; bun-only.
+# ============================================================================
+
+@test "codex: hook scripts honor the exit-2/stderr nudge contract" {
+    run bash "$PROJ_DIR/tests/codex-hook-probe.sh"
+    assert_success
+    assert_output --partial "PASS: Codex hook scripts"
+}
+
+# ============================================================================
+# Codex installer (U4): sandboxed HOME + CODEX_HOME per test. Verifies hook
+# registration (with timeout), byte-for-byte idempotency (no trust churn),
+# data-safe host-scoped uninstall, coexistence with Claude, and custom CODEX_HOME.
+# ============================================================================
+
+codex_setup() {
+    command -v jq >/dev/null 2>&1 || skip "jq required for installer tests"
+    export CODEX_HOME="$CC_DICE_BASE/codex"
+    mkdir -p "$CODEX_HOME"
+}
+
+@test "codex install: registers Stop + SessionStart with timeout; check passes" {
+    codex_setup
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_success
+    assert_output --partial "Registered Stop + SessionStart"
+    # both events present, each carrying the 10s timeout
+    assert [ "$(jq '.hooks.Stop[0].hooks[0].timeout' "$CODEX_HOME/hooks.json")" = "10" ]
+    assert [ "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CODEX_HOME/hooks.json")" != "null" ]
+    run bash "$PROJ_DIR/install.sh" check codex
+    assert_success
+    assert_output --partial "Status: OK"
+}
+
+@test "codex reconcile: repairs drifted timeout in place and collapses duplicates" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    # drift the timeout and duplicate the owned Stop entry
+    jq '.hooks.Stop[0].hooks[0].timeout = 99 | .hooks.Stop += [.hooks.Stop[0]]' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command | test("codex-stop"))] | length' "$CODEX_HOME/hooks.json")" = "1" ]
+    assert [ "$(jq '.hooks.Stop[0].hooks[0].timeout' "$CODEX_HOME/hooks.json")" = "10" ]
+}
+
+@test "codex reconcile: preserves unrelated entry ordering across install" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop = ([{"hooks":[{"type":"command","command":"FIRST"}]}] + .hooks.Stop + [{"hooks":[{"type":"command","command":"LAST"}]}])' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ "$(jq -r '.hooks.Stop[0].hooks[0].command' "$CODEX_HOME/hooks.json")" = "FIRST" ]
+    assert [ "$(jq -r '.hooks.Stop[-1].hooks[0].command' "$CODEX_HOME/hooks.json")" = "LAST" ]
+}
+
+@test "codex install: refuses to clobber an unrelated regular file at the CLI path" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin"
+    echo "REAL USER BINARY" > "$HOME/.local/bin/agent-dice"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(cat "$HOME/.local/bin/agent-dice")" = "REAL USER BINARY" ]
+    # and uninstall must not delete it either
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ "$(cat "$HOME/.local/bin/agent-dice")" = "REAL USER BINARY" ]
+}
+
+@test "codex reconcile: leaves malformed hooks.json untouched and aborts" {
+    codex_setup
+    printf 'NOT JSON{' > "$CODEX_HOME/hooks.json"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(cat "$CODEX_HOME/hooks.json")" = "NOT JSON{" ]
+}
+
+@test "codex check: reports errors (nonzero) for a nonfunctional install" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    echo '{}' > "$CODEX_HOME/dice/slots.json"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1   # data kept, hooks gone
+    run bash "$PROJ_DIR/install.sh" check codex
+    assert_failure
+    assert_output --partial "error"
+}
+
+@test "cli: AGENT_DICE_HOST=codex targets the Codex base, not Claude's" {
+    export CODEX_HOME="$CC_DICE_BASE/ch"
+    mkdir -p "$CODEX_HOME"
+    run env -u AGENT_DICE_BASE -u CC_DICE_BASE AGENT_DICE_HOST=codex bun "$CLI" register demo --message x
+    assert_success
+    assert [ "$(jq -r 'has("demo")' "$CODEX_HOME/dice/slots.json")" = "true" ]
+    assert [ ! -f "$HOME/.claude/dice/slots.json" ]
+}
+
+@test "cli: explicit AGENT_DICE_BASE wins over AGENT_DICE_HOST=codex" {
+    export CODEX_HOME="$CC_DICE_BASE/ch"
+    local explicit="$CC_DICE_BASE/explicit"
+    mkdir -p "$explicit/state" "$CODEX_HOME"
+    run env -u CC_DICE_BASE AGENT_DICE_HOST=codex AGENT_DICE_BASE="$explicit" bun "$CLI" register demo --message x
+    assert_success
+    assert [ -f "$explicit/slots.json" ]
+    assert [ ! -f "$CODEX_HOME/dice/slots.json" ]
+}
+
+@test "codex host: empty AGENT_DICE_BASE resolves to the Codex base, not Claude's store" {
+    export CODEX_HOME="$CC_DICE_BASE/ch"
+    run env -u CC_DICE_BASE AGENT_DICE_BASE="" bun -e 'import { codexBaseDir } from "'"$PROJ_DIR"'/src/adapters/codex/host"; process.stdout.write(codexBaseDir())'
+    assert_success
+    assert_output "$CC_DICE_BASE/ch/dice"
+}
+
+@test "codex install: refuses an unrelated same-basename symlink at the CLI path (strict ownership)" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/other"
+    echo "unrelated" > "$CC_DICE_BASE/other/agent-dice.ts"
+    ln -sf "$CC_DICE_BASE/other/agent-dice.ts" "$HOME/.local/bin/agent-dice"  # basename matches
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$CC_DICE_BASE/other/agent-dice.ts" ]
+}
+
+@test "codex install: refuses a same-ROLE-SUFFIX symlink from another tree (strict, not suffix)" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/unrelated/bin"
+    echo "another checkout" > "$CC_DICE_BASE/unrelated/bin/agent-dice.ts"   # ends with /bin/agent-dice.ts, different file
+    ln -sf "$CC_DICE_BASE/unrelated/bin/agent-dice.ts" "$HOME/.local/bin/agent-dice"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$CC_DICE_BASE/unrelated/bin/agent-dice.ts" ]
+}
+
+@test "codex install: adopts an existing symlink that already points at THIS checkout's CLI" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$PROJ_DIR/bin/agent-dice.ts" "$HOME/.local/bin/agent-dice"   # exactly our managed target
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_success
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$PROJ_DIR/bin/agent-dice.ts" ]
+}
+
+@test "codex canonical root: trailing-slash / dot aliases collapse to one registration" {
+    command -v jq >/dev/null 2>&1 || skip "jq required"
+    local root="$CC_DICE_BASE/ch"
+    CODEX_HOME="$root/"  bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # trailing slash
+    CODEX_HOME="$root/." bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # /.
+    CODEX_HOME="$root"   bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # bare
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command | test("codex-stop"))] | length' "$root/hooks.json")" = "1" ]
+}
+
+@test "codex canonical root: symlink-aliased CODEX_HOME resolves to one registration" {
+    command -v jq >/dev/null 2>&1 || skip "jq required"
+    mkdir -p "$CC_DICE_BASE/real"
+    ln -s "$CC_DICE_BASE/real" "$CC_DICE_BASE/link"
+    CODEX_HOME="$CC_DICE_BASE/real" bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    CODEX_HOME="$CC_DICE_BASE/link" bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1   # alias of the same dir
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command | test("codex-stop"))] | length' "$CC_DICE_BASE/real/hooks.json")" = "1" ]
+}
+
+@test "codex install: rejects a relative CODEX_HOME" {
+    run env CODEX_HOME="relative/path" bash "$PROJ_DIR/install.sh" codex
+    assert_failure
+    assert_output --partial "absolute path"
+}
+
+@test "codex purge: refuses to delete a pre-existing (unmarked) dice dir" {
+    codex_setup
+    mkdir -p "$CODEX_HOME/dice"                       # dir the installer did NOT create
+    echo keep > "$CODEX_HOME/dice/user-data"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1  # installs into it → no ownership marker
+    assert [ ! -f "$CODEX_HOME/dice/.agent-dice" ]
+    run bash "$PROJ_DIR/install.sh" uninstall codex --purge-data
+    assert_output --partial "Refusing --purge-data"
+    assert [ -f "$CODEX_HOME/dice/user-data" ]         # user data survives
+}
+
+@test "codex purge: deletes only when the installer created the dir (marker present)" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1  # installer creates dir → marker
+    assert [ -f "$CODEX_HOME/dice/.agent-dice" ]
+    bash "$PROJ_DIR/install.sh" uninstall codex --purge-data >/dev/null 2>&1
+    assert [ ! -d "$CODEX_HOME/dice" ]
+}
+
+@test "codex reconcile: writes THROUGH a symlinked hooks.json (preserves link + existing hooks)" {
+    command -v jq >/dev/null 2>&1 || skip "jq required"
+    codex_setup
+    mkdir -p "$CC_DICE_BASE/dotfiles"
+    # a dotfiles-managed hooks.json with the user's own hook, symlinked into ~/.codex
+    echo '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-existing-notify"}]}]}}' > "$CC_DICE_BASE/dotfiles/hooks.json"
+    ln -s "$CC_DICE_BASE/dotfiles/hooks.json" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ -L "$CODEX_HOME/hooks.json" ]                                    # link preserved, not clobbered
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command|test("codex-stop"))]|length' "$CC_DICE_BASE/dotfiles/hooks.json")" = "1" ]   # our hook in the target
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command=="my-existing-notify")]|length' "$CC_DICE_BASE/dotfiles/hooks.json")" = "1" ] # user's hook survived
+}
+
+@test "codex install: migrates a legacy cc-dice CLI link to this checkout" {
+    codex_setup
+    mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/oldshare/cc-dice/bin"
+    : > "$CC_DICE_BASE/oldshare/cc-dice/bin/agent-dice.ts"
+    ln -sf "$CC_DICE_BASE/oldshare/cc-dice/bin/agent-dice.ts" "$HOME/.local/bin/agent-dice"   # legacy cc-dice CLI
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ "$(readlink "$HOME/.local/bin/agent-dice")" = "$PROJ_DIR/bin/agent-dice.ts" ]     # repointed, not stuck stale
+}
+
+@test "codex reconcile: preserves an unrelated sibling in the same hooks[] (entry-level)" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop[0].hooks += [{"type":"command","command":"KEEP-SIBLING"}]' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1                 # reconcile present
+    assert [ "$(jq '[.hooks.Stop[].hooks[] | select(.command=="KEEP-SIBLING")] | length' "$CODEX_HOME/hooks.json")" = "1" ]
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1        # reconcile absent
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command=="KEEP-SIBLING")] | length' "$CODEX_HOME/hooks.json")" = "1" ]
+    assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command|test("codex-stop"))] | length' "$CODEX_HOME/hooks.json")" = "0" ]
+}
+
+@test "codex check: drifted timeout fails the canonical registration check" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop[0].hooks[0].timeout = 99' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    run bash "$PROJ_DIR/install.sh" check codex
+    assert_failure
+}
+
+@test "codex install: read-only hooks dir propagates write failure (no false success)" {
+    codex_setup
+    [ "$(id -u)" -eq 0 ] && skip "read-only enforcement needs non-root"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.Stop[0].hooks[0].timeout = 99' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/h.t"
+    mv "$CODEX_HOME/h.t" "$CODEX_HOME/hooks.json"
+    chmod 555 "$CODEX_HOME"
+    run bash "$PROJ_DIR/install.sh" codex
+    chmod 755 "$CODEX_HOME"
+    assert_failure
+    refute_output --partial "installation complete"
+}
+
+@test "codex uninstall: failed reconcile aborts before removal and --purge-data" {
+    codex_setup
+    [ "$(id -u)" -eq 0 ] && skip "read-only enforcement needs non-root"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    echo '{}' > "$CODEX_HOME/dice/slots.json"
+    chmod 555 "$CODEX_HOME"
+    run bash "$PROJ_DIR/install.sh" uninstall codex --purge-data
+    chmod 755 "$CODEX_HOME"
+    assert_failure
+    assert [ -f "$CODEX_HOME/dice/slots.json" ]
+    assert [ -e "$CODEX_HOME/dice/codex-stop.ts" ]
+}
+
+@test "codex install: re-install is byte-for-byte idempotent (no trust churn)" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    local h1 h2
+    h1=$(shasum "$CODEX_HOME/hooks.json" | awk '{print $1}')
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    h2=$(shasum "$CODEX_HOME/hooks.json" | awk '{print $1}')
+    assert_equal "$h1" "$h2"
+}
+
+@test "codex install: preserves unrelated hooks in hooks.json" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    jq '.hooks.PreToolUse = [{"hooks":[{"type":"command","command":"mytool"}]}]' "$CODEX_HOME/hooks.json" > "$CODEX_HOME/hooks.json.t" && mv "$CODEX_HOME/hooks.json.t" "$CODEX_HOME/hooks.json"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$CODEX_HOME/hooks.json")" = "mytool" ]
+}
+
+@test "codex uninstall: preserves dice data by default, removes with --purge-data" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    echo '{}' > "$CODEX_HOME/dice/slots.json"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ -f "$CODEX_HOME/dice/slots.json" ]
+    assert [ ! -e "$CODEX_HOME/dice/codex-stop.ts" ]
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    bash "$PROJ_DIR/install.sh" uninstall codex --purge-data >/dev/null 2>&1
+    assert [ ! -d "$CODEX_HOME/dice" ]
+}
+
+@test "codex uninstall: removes shared CLI only when no host remains" {
+    codex_setup
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    # Claude host present → CLI kept
+    mkdir -p "$HOME/.claude/dice"; ln -sf "$PROJ_DIR/src/index.ts" "$HOME/.claude/dice/cc-dice.ts"
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ -e "$HOME/.local/bin/agent-dice" ]
+    # remove Claude marker → next codex uninstall drops the CLI
+    rm -f "$HOME/.claude/dice/cc-dice.ts"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    bash "$PROJ_DIR/install.sh" uninstall codex >/dev/null 2>&1
+    assert [ ! -e "$HOME/.local/bin/agent-dice" ]
+}
+
+@test "codex install: custom CODEX_HOME is honored for data and hooks.json" {
+    command -v jq >/dev/null 2>&1 || skip "jq required for installer tests"
+    export CODEX_HOME="$CC_DICE_BASE/custom-codex-root"
+    mkdir -p "$CODEX_HOME"
+    bash "$PROJ_DIR/install.sh" codex >/dev/null 2>&1
+    assert [ -d "$CODEX_HOME/dice/state" ]
+    assert [ -f "$CODEX_HOME/hooks.json" ]
+}

@@ -1,6 +1,6 @@
 # ADR 0001: Host-agnostic dice core behind a provisional DiceHost contract
 
-- **Status:** Accepted (amended 2026-06-20 — validated by the Pi adapter; see Amendment)
+- **Status:** Accepted (amended 2026-06-20 — Pi adapter; 2026-07-18 — Codex adapter; see Amendments)
 - **Date:** 2026-06-20
 - **Tickets:** PR #2 (v0.2.0, commit 33e80dc); Pi adapter on branch `feat/pi-adapter`
 - **Deciders:** provi; Claude Code; cross-model `/code-review`
@@ -50,6 +50,43 @@ Deltas — documentation/adapter, not contract:
 The contract is validated for Claude + Pi. It may still evolve for a host with a
 fundamentally different lifecycle (e.g. Codex's hook-process model) — that remains a
 revisit trigger.
+
+## Amendment (2026-07-18): validated by the Codex adapter
+
+A **third** host now drives the engine with **zero changes to `src/core/` or
+`DiceHost`/`CoreCheckContext`**. The Codex adapter (`src/adapters/codex/`, installed
+via `./install.sh codex`) holds.
+
+The 2026-06-20 amendment (above) predicted Codex would be "a host with a
+fundamentally different lifecycle (Codex's hook-process model)" and that it "would
+have no in-session session-start event and must synthesize one." **That prediction
+was wrong — and it is preserved above as a record of what we expected.** What the
+build found:
+
+- **Codex hooks are Claude-Code-compatible, not different.** Codex's hook system is a
+  near-literal reimplementation of Claude Code's: the same `Stop` / `SessionStart`
+  event names, the same stdin JSON (`session_id`, `transcript_path`, `cwd`), and the
+  same nudge mechanism — **exit 2 + stderr, re-injected to the model**. So the Codex
+  host is the structural *twin of the Claude adapter* (external hook scripts + stdin),
+  not a Pi-style in-process extension.
+- **Codex DOES have a SessionStart event**, with a `source` of
+  `startup`/`resume`/`clear`/`compact` — the direct analog of Pi's reason-gating and
+  Claude's session sources. No event had to be synthesized; the adapter clears
+  `clearOnSessionStart` slots only on `startup`/`clear`.
+- **Reuse, not reimplementation.** Because Codex hooks run under Bun and `getBaseDir()`
+  reads `AGENT_DICE_BASE` at call time, the Codex `DiceHost` reuses the Claude file
+  stores verbatim, pointed at `${CODEX_HOME:-~/.codex}/dice` via an override-safe env
+  shim. The only Codex-specific code is the rollout-JSONL depth parser. (Pi had to
+  reimplement storage only because it runs under Node, without `Bun.*`.)
+- **Depth is the same unit, with a constant offset.** Codex depth counts rollout user
+  turns (`response_item` + `payload.message` + `role:user`). Codex records the leading
+  `<environment_context>` bootstrap as a user turn, so a session carries a constant +1
+  offset — the accumulation slope is unchanged (so `accumulationRate` transfers), only
+  the first threshold arrives one turn early.
+
+The contract is now validated for **Claude + Pi + Codex** across two different host
+shapes (in-process extension and external hook process). The "fundamentally different
+lifecycle" revisit trigger is considered **discharged**.
 
 ## Context
 

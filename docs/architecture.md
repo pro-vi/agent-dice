@@ -48,14 +48,68 @@ engine never touches a transcript or a session env var.
 A boundary conformance test (C8) fails if anything under `src/core/**` imports a
 Claude/host module, a node builtin, `Bun`, or `process.env`.
 
-**Reusability:** the engine now drives a **second host**. The Pi adapter under
-`src/adapters/pi/` (installed via `pi install git:github.com/pro-vi/agent-dice`)
-implements `DiceHost` without importing any Claude transcript/session helpers —
-validating the seam with **zero changes to core**. Pi rolls on `agent_end` (its
-analog of Claude's Stop), caches depth from `turn_end`'s `turnIndex` (no transcript
-parse), persists state via `node:fs` under `~/.pi/agent/dice/`, and injects nudges
-via `pi.sendMessage`. A Codex adapter is researched but not yet built. agent-dice
-remains the Claude Code distribution; Pi is an additional host on the same core.
+**Reusability:** the engine drives **three hosts**, all on the same core with **zero
+changes to `src/core/` or `DiceHost`/`CoreCheckContext`**.
+
+- **Pi** (`src/adapters/pi/`, installed via `pi install git:github.com/pro-vi/agent-dice`)
+  is an *in-process extension*: it rolls on `agent_end` (its analog of Claude's Stop),
+  reads depth from the session's user-message count, persists state via `node:fs` under
+  `~/.pi/agent/dice/`, and injects nudges via `pi.sendMessage`.
+- **Codex** (`src/adapters/codex/`, installed via `./install.sh codex`) is a *hook-based
+  host — the structural twin of the Claude adapter*. Codex's lifecycle hooks are
+  Claude-Code-compatible: same `Stop`/`SessionStart` events, the same stdin JSON
+  (`session_id`, `transcript_path`), and the same nudge mechanism (**exit 2 + stderr,
+  re-injected to the model**). So the only Codex-specific logic is the rollout-JSONL
+  depth parser (`src/adapters/codex/transcript.ts`); the `DiceHost` reuses the Claude
+  file stores pointed at `${CODEX_HOME:-~/.codex}/dice`. See "Codex host" below.
+
+agent-dice remains the Claude Code distribution; Pi and Codex are additional hosts on
+the same core.
+
+### Codex host
+
+Codex is added exactly like the Claude host — external hook scripts + stdin JSON +
+exit-2 nudge — not like Pi's in-process extension.
+
+- **Storage:** `${CODEX_HOME:-~/.codex}/dice` (isolated per-host, like Pi). The runtime
+  (`codexRoot()` in `src/adapters/codex/host.ts`) and the installer resolve the same
+  root; `AGENT_DICE_BASE` overrides it (opt-in sharing with another host).
+- **Depth:** the live Codex `Stop` payload does **not** include `transcript_path` (its fields
+  are `session_id`, `cwd`, `stop_hook_active`, `last_assistant_message`) — so the adapter
+  **locates the rollout by session id** (`findCodexRollout`: newest-first walk of
+  `${CODEX_HOME}/sessions/YYYY/MM/DD` for `rollout-*-<session_id>.jsonl`), then
+  `src/adapters/codex/transcript.ts` counts user turns in it — lines with
+  `type==="response_item"`, `payload.type==="message"`, `payload.role==="user"` — the analog of
+  Claude's `type==="user" && !toolUseResult`. (An explicit `transcript_path`, if a Codex version
+  ever supplies one, still wins.) Codex records the leading `<environment_context>` bootstrap as
+  a user turn, so a session starts with a **constant +1 offset**: the accumulation slope is
+  unchanged (so `accumulationRate` transfers with no recalibration), the first threshold just
+  arrives one turn early; after the first trigger/reset the state rebases.
+- **Hooks:** `hooks/codex-stop.ts` (roll → exit 2 + stderr on trigger, else exit 0,
+  fail-open) and `hooks/codex-session-start.ts` (clear `clearOnSessionStart` slots only on
+  `source` `startup`/`clear`, skipping `resume`/`compact`).
+- **Registration:** `install.sh codex` writes `Stop` + `SessionStart` command hooks (with a
+  timeout) into `${CODEX_HOME:-~/.codex}/hooks.json` (a user-layer config whose block shape
+  matches Claude's `settings.json`). Registration is idempotent — a byte-for-byte no-op once
+  the file is normalized — so it never churns Codex's index-sensitive hook trust. The root is
+  canonicalized (absolute + physical) on both sides — installer `pwd -P`, runtime
+  `realpathSync` — so aliased spellings (trailing slash, symlinked root) map to one identity.
+  `--purge-data` only deletes a dice dir this installer created (it stamps a `.agent-dice`
+  marker); an unmarked/pre-existing dir is refused. A **symlinked `hooks.json`** (dotfiles /
+  stow / chezmoi) is written **through** — the reconciler resolves the link and atomically
+  replaces its target, preserving the symlink and any hooks already in it. Upgrading from the
+  old **cc-dice** install is handled: a CLI symlink pointing into a legacy `.../cc-dice/`
+  checkout is migrated (removed + relinked) so the command doesn't silently stay on pre-rename
+  code. On first run Codex asks to trust the command hook; approve it (a persisted approval) or
+  pass `--dangerously-bypass-hook-trust` for a single non-interactive invocation.
+
+- **Limitations (deliberate, for a single-user local tool):** the installer is the only writer
+  of `hooks.json` and is not guarded against two concurrent `install`/`uninstall` runs (a
+  non-issue for a manual CLI; normal Codex sessions never write it). Reconciliation assumes
+  Codex's valid hook schema (arrays of command groups) — hand-authored non-array shapes aren't
+  repaired. Host isolation holds **one host per process**: the Claude and Codex hosts share the
+  `AGENT_DICE_BASE` env and must not be constructed in the same process (they never are — each
+  is a separate hook process).
 
 ---
 
@@ -221,12 +275,15 @@ agent-dice/
       accumulator.ts        Pure depth→dice formula + sentinel calibration
     adapters/
       claude-code.ts        Builds DiceHost from file stores + resolves session/depth
-      claude-renderer.ts    Trigger-message rendering (placeholders + dice flavor)
-      pi/                   Pi extension adapter (second host)
+      claude-renderer.ts    Trigger-message rendering (placeholders + dice flavor; shared by all hosts)
+      pi/                   Pi extension adapter (in-process host)
         index.ts            Extension entry: turn_end / session_start / agent_end wiring
         host.ts             createPiHost (DiceHost) + piContext (CoreCheckContext)
         store.ts            node:fs storage (Claude-identical formats)
         commands.ts         /dice slash command
+      codex/               Codex adapter (hook-based host — Claude twin)
+        transcript.ts       Rollout-JSONL depth parser (the only Codex-specific logic)
+        host.ts             createCodexHost (reuses Claude stores @ ~/.codex/dice) + resolveCodexContext
     registry.ts             Slot CRUD + file persistence
     roll.ts                 Pure rolling (injectable RNG) + target checking + probability
     accumulator.ts          Claude/file wrapper over core/accumulator
@@ -240,8 +297,10 @@ agent-dice/
     agent-dice.ts              CLI entrypoint
 
   hooks/
-    stop.ts                 Generic stop hook (checks all slots)
-    session-start.ts        Session initialization hook
+    stop.ts                 Claude stop hook (checks all slots)
+    session-start.ts        Claude session initialization hook
+    codex-stop.ts           Codex Stop hook (roll → exit 2 + stderr nudge; fail-open)
+    codex-session-start.ts  Codex SessionStart hook (clear on source startup/clear)
 
   docs/
     architecture.md         This file
@@ -260,8 +319,10 @@ agent-dice/
 
 | Variable | Purpose | Set by |
 |----------|---------|--------|
-| `CC_DICE_BASE` | Override base directory (default: `~/.claude/dice/`) | Test setup |
-| `CC_DICE_SESSION_ID` | Session UUID for state isolation | SessionStart hook |
+| `AGENT_DICE_BASE` | Override base directory (default: Claude `~/.claude/dice/`, Codex `${CODEX_HOME:-~/.codex}/dice`; `CC_DICE_BASE` is a back-compat alias). Point two hosts at one path to share config. | Test setup / user |
+| `AGENT_DICE_SESSION_ID` | Session UUID for state isolation (`CC_DICE_SESSION_ID` alias) | SessionStart hook |
+| `CODEX_HOME` | Codex home root; the Codex host stores under `$CODEX_HOME/dice` (default `~/.codex`) | Codex / user |
+| `AGENT_DICE_HOST` | CLI host target: `codex` points the `agent-dice` CLI at the Codex base (bare CLI → Claude; `AGENT_DICE_BASE` overrides) | User |
 | `DEBUG` | Verbose logging to stderr when `"1"` | User |
 
 ---
