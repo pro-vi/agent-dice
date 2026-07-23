@@ -1,6 +1,6 @@
 {
   "name": "agent-dice",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Probabilistic dice triggers for AI agent hooks — host-agnostic core with Claude Code, Codex, and Pi adapters",
   "type": "module",
   "main": "src/index.ts",
