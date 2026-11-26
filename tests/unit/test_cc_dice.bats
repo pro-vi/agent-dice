@@ -1499,6 +1499,45 @@ codex_setup() {
     assert [ "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command=="my-existing-notify")]|length' "$CC_DICE_BASE/dotfiles/hooks.json")" = "1" ] # user's hook survived
 }
 
+@test "codex reconcile: warns once when the written hooks.json is tracked in git (silent on a no-op re-run, warns on uninstall)" {
+    codex_setup
+    mkdir -p "$CC_DICE_BASE/dotfiles"
+    echo '{"hooks":{}}' > "$CC_DICE_BASE/dotfiles/hooks.json"
+    git -C "$CC_DICE_BASE/dotfiles" init -q
+    git -C "$CC_DICE_BASE/dotfiles" add hooks.json
+    ln -s "$CC_DICE_BASE/dotfiles/hooks.json" "$CODEX_HOME/hooks.json"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_success
+    assert [ "$(printf '%s\n' "$output" | grep -c 'hooks.json is tracked in git')" = "1" ]   # two hook writes, one warning
+    run bash "$PROJ_DIR/install.sh" codex                                                    # already canonical: nothing written
+    assert_success
+    refute_output --partial "is tracked in git"
+    run bash "$PROJ_DIR/install.sh" uninstall codex                                          # removal is a diff in that repo too
+    assert_success
+    assert_output --partial "hooks.json is tracked in git"
+}
+
+@test "codex reconcile: no git warning when the symlinked hooks.json is untracked" {
+    codex_setup
+    mkdir -p "$CC_DICE_BASE/dotfiles"
+    echo '{"hooks":{}}' > "$CC_DICE_BASE/dotfiles/hooks.json"
+    git -C "$CC_DICE_BASE/dotfiles" init -q                                      # a repo, but the file is not in it
+    ln -s "$CC_DICE_BASE/dotfiles/hooks.json" "$CODEX_HOME/hooks.json"
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_success
+    refute_output --partial "is tracked in git"
+}
+
+@test "codex reconcile: warns for a tracked hooks.json that is not a symlink" {
+    codex_setup
+    echo '{"hooks":{}}' > "$CODEX_HOME/hooks.json"
+    git -C "$CODEX_HOME" init -q
+    git -C "$CODEX_HOME" add hooks.json                                          # as when ~/.codex itself lives in a dotfiles repo
+    run bash "$PROJ_DIR/install.sh" codex
+    assert_success
+    assert_output --partial "hooks.json is tracked in git"
+}
+
 @test "codex install: migrates a legacy cc-dice CLI link to this checkout" {
     codex_setup
     mkdir -p "$HOME/.local/bin" "$CC_DICE_BASE/oldshare/cc-dice/bin"

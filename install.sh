@@ -16,6 +16,7 @@ SETTINGS_FILE="${HOME}/.claude/settings.json"
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
 CODEX_DICE_BASE="$CODEX_ROOT/dice"           # data + hook-script symlinks live here
 CODEX_HOOKS_JSON="$CODEX_ROOT/hooks.json"    # user-layer hook registration
+CODEX_HOOKS_TRACKED_CHECKED=""               # set once a run has asked git whether hooks.json is tracked
 
 # Colors
 RED='\033[0;31m'
@@ -571,7 +572,24 @@ reconcile_codex_hook() {
     if ! mv "$tmp" "$write_target" 2>/dev/null; then
         rm -f "$tmp"; print_error "Cannot write $write_target (read-only?)"; return 1
     fi
+    warn_codex_hooks_tracked "$write_target"
     return 0
+}
+
+# warn_codex_hooks_tracked <path just written>
+#
+# The hooks.json the installer writes can be tracked in a git repo: directly, or
+# through a symlinked file or directory (dotfiles / stow / chezmoi). In a personal
+# dotfiles repo the change belongs there; in a shared config template it does not.
+# The installer cannot tell the two apart and writes either way, so it says once
+# per run that the change lands as a diff in that repo. Best effort: an untracked
+# file, or a git that is missing or cannot answer, gets no warning.
+warn_codex_hooks_tracked() {
+    local target="$1"
+    [ -z "$CODEX_HOOKS_TRACKED_CHECKED" ] || return 0                   # Stop and SessionStart write the same file
+    CODEX_HOOKS_TRACKED_CHECKED=1
+    git -C "$(dirname "$target")" ls-files --error-unmatch -- "$(basename "$target")" >/dev/null 2>&1 || return 0
+    print_warning "hooks.json is tracked in git, so this change shows up as a diff in that repo: $target"
 }
 
 # Structural registration check: EXACTLY ONE owned hook object exists for $1 and

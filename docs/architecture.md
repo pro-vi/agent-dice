@@ -97,7 +97,9 @@ exit-2 nudge — not like Pi's in-process extension.
   `--purge-data` only deletes a dice dir this installer created (it stamps a `.agent-dice`
   marker); an unmarked/pre-existing dir is refused. A **symlinked `hooks.json`** (dotfiles /
   stow / chezmoi) is written **through** — the reconciler resolves the link and atomically
-  replaces its target, preserving the symlink and any hooks already in it. Upgrading from the
+  replaces its target, preserving the symlink and any hooks already in it. When the file it
+  writes is tracked in a git repo, the installer prints one warning per run, because the
+  change lands there as a diff. Upgrading from the
   old **cc-dice** install is handled: a CLI symlink pointing into a legacy `.../cc-dice/`
   checkout is migrated (removed + relinked) so the command doesn't silently stay on pre-rename
   code. On first run Codex asks to trust the command hook; approve it (a persisted approval) or
