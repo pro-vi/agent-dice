@@ -18,6 +18,10 @@ setup() {
     export TEST_SESSION_ID="abcdef01-2345-6789-abcd-ef$(printf '%06x' $$)"
     # Also set env var as fallback
     export CC_DICE_SESSION_ID="$TEST_SESSION_ID"
+    # A Claude Code session with the dice installed exports AGENT_DICE_SESSION_ID,
+    # and that name wins over the alias above. Left set, the CLI looks up the host
+    # session's id instead of the test's and finds no transcript for it.
+    unset AGENT_DICE_SESSION_ID
 
     # Override HOME so getTranscriptPath() can auto-resolve transcripts in tests.
     # This lets CLI commands find transcripts without explicit path args.

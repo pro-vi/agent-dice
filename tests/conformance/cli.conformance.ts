@@ -16,9 +16,15 @@ const CLI = resolve(import.meta.dir, "../../bin/agent-dice.ts");
 
 type Result = { stdout: string; stderr: string; code: number };
 
+// A Claude Code session with the dice installed exports AGENT_DICE_SESSION_ID, and
+// that name wins over the CC_DICE_SESSION_ID these tests set. Left in place, the
+// CLI looks up the host session's id and finds no transcript for it.
+const inherited = { ...process.env };
+delete inherited.AGENT_DICE_SESSION_ID;
+
 async function cli(args: string[], env: Record<string, string> = {}): Promise<Result> {
   const proc = Bun.spawn(["bun", CLI, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...inherited, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
